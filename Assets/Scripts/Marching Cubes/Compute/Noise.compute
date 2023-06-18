@@ -1,0 +1,18 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+#include "Includes/SimplexNoise3D.compute"
+
+RWTexture3D<float> DensityTexture;
+int textureSize;
+float noiseScale;
+
+[numthreads(8,8,8)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= textureSize || id.y >= textureSize || id.z >= textureSize)
+    {
+        return;
+    }
+    
+    DensityTexture[id] = ((float) id.y / textureSize * 4) - 0.5f + (SimplexNoise(id * noiseScale) * 0.2f);
+}
