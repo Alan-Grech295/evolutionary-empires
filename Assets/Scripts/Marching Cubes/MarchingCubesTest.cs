@@ -1,7 +1,9 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using Unity.Entities.UniversalDelegates;
 using Unity.Mathematics;
+using UnityEditor;
 using UnityEngine;
 
 [ExecuteInEditMode]
@@ -19,6 +21,9 @@ public class MarchingCubesTest : MonoBehaviour
 
     private Mesh mesh;
 
+    private const int HASH_BUFFER_SIZE = 16384;
+    private const int THREAD_BLOCKS = HASH_BUFFER_SIZE / 64;
+
     // Start is called before the first frame update
     void Start()
     {
@@ -33,6 +38,8 @@ public class MarchingCubesTest : MonoBehaviour
 
     public void GenerateMesh()
     {
+        System.Diagnostics.Stopwatch timer = new System.Diagnostics.Stopwatch();
+        timer.Start();
         GenerateNoiseTex();
 
         mesh = new Mesh();
@@ -43,25 +50,39 @@ public class MarchingCubesTest : MonoBehaviour
 
         mesh.Clear();
 
+        int k_HashInit = marchingCubesCompute.FindKernel("Initialize");
+        int k_Main = marchingCubesCompute.FindKernel("CSMain");
+
+        // Initialize hash table
+        ComputeBuffer vertHashTable = new ComputeBuffer(HASH_BUFFER_SIZE, sizeof(int) * 2); // Size is power of 2
+        marchingCubesCompute.SetBuffer(k_HashInit, "b_hash", vertHashTable);
+        marchingCubesCompute.SetInt("e_hashBufferSize", HASH_BUFFER_SIZE);
+        marchingCubesCompute.Dispatch(k_HashInit, THREAD_BLOCKS, 1, 1);
+
+        // Create marching cubes
         ComputeBuffer vertBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels * 3, sizeof(float) * 3, ComputeBufferType.Counter);
         vertBuffer.SetCounterValue(0);
         ComputeBuffer indexBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels * 3, sizeof(int), ComputeBufferType.Counter);
         indexBuffer.SetCounterValue(0);
 
-        marchingCubesCompute.SetTexture(0, "DensityTexture", noise);
-        marchingCubesCompute.SetBuffer(0, "Vertices", vertBuffer);
-        marchingCubesCompute.SetBuffer(0, "Indices", indexBuffer);
+        marchingCubesCompute.SetTexture(k_Main, "DensityTexture", noise);
+        marchingCubesCompute.SetBuffer(k_Main, "Vertices", vertBuffer);
+        marchingCubesCompute.SetBuffer(k_Main, "Indices", indexBuffer);
 
         marchingCubesCompute.SetInt("size", numVoxels);
         marchingCubesCompute.SetFloat("surfaceLevel", surfaceLevel);
 
+        // Hash table buffer
+        marchingCubesCompute.SetBuffer(k_Main, "b_hash", vertHashTable);
+        marchingCubesCompute.SetInt("e_hashBufferSize", HASH_BUFFER_SIZE);
+
         uint3 kernelThreads;
-        marchingCubesCompute.GetKernelThreadGroupSizes(0, out kernelThreads.x, out kernelThreads.y, out kernelThreads.z);
+        marchingCubesCompute.GetKernelThreadGroupSizes(k_Main, out kernelThreads.x, out kernelThreads.y, out kernelThreads.z);
         int3 numThreads = new int3(Mathf.CeilToInt(numVoxels / kernelThreads.x),
                                    Mathf.CeilToInt(numVoxels / kernelThreads.y),
                                    Mathf.CeilToInt(numVoxels / kernelThreads.z));
 
-        marchingCubesCompute.Dispatch(0, numThreads.x, numThreads.y, numThreads.z);
+        marchingCubesCompute.Dispatch(k_Main, numThreads.x, numThreads.y, numThreads.z);
 
         // Create mesh
         ComputeBuffer countBuffer = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Raw);
@@ -88,6 +109,9 @@ public class MarchingCubesTest : MonoBehaviour
 
         vertBuffer.Release();
         indexBuffer.Release();
+
+        timer.Stop();
+        Debug.Log($"Generated map in {timer.Elapsed.TotalMilliseconds}ms");
     }
 
     public void GenerateNoiseTex()

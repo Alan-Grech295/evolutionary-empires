@@ -7,6 +7,9 @@ using UnityEngine;
 public class SingleCubeTest : MonoBehaviour
 {
     public bool[] corners = new bool[8];
+    [Range(0, 11)]
+    public int edgeIndex;
+    [Range(0, 26)]
     public int cubeIndex;
     public float scale = 1.0f;
 
@@ -301,7 +304,7 @@ public class SingleCubeTest : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        for(int i = 0; i < 8; i++)
+        /*for(int i = 0; i < 8; i++)
         {
             Gizmos.color = corners[i] ? Color.white : Color.black;
             Gizmos.DrawSphere(transform.position + cubeCorners[i] * scale, 0.1f);
@@ -349,6 +352,49 @@ public class SingleCubeTest : MonoBehaviour
             Gizmos.DrawLine(v1, v2);
             Gizmos.DrawLine(v2, v3);
             Gizmos.DrawLine(v3, v1);
+        }*/
+
+        Vector3 cubeCentre = new Vector3();
+
+        Gizmos.color = Color.white;
+        for (int y = -1; y <= 1; y++)
+        {
+            for (int z = -1; z <= 1; z++)
+            {
+                for (int x = -1; x <= 1; x++)
+                {
+                    if((x + 1) + (y + 1) * 3 + (z + 1) * 9 == cubeIndex)
+                    {
+                        cubeCentre = new Vector3(x, y, z);
+                        continue;
+                    }
+
+                    DrawCube(new Vector3(x, y, z), 0.1f);
+                }
+            }
+        }
+
+        Gizmos.color = Color.red;
+        DrawCube(cubeCentre, 0.1f);
+
+        Gizmos.color = Color.green;
+        for (int i = 0; i < 12; i++)
+        {
+            if (i == edgeIndex)
+                Gizmos.color = Color.cyan;
+            else
+                Gizmos.color = Color.green;
+
+            Gizmos.DrawLine(transform.position + (cubeCentre + cubeCorners[cornerIndexAFromEdge[i]]) * scale,
+                transform.position + (cubeCentre + cubeCorners[cornerIndexBFromEdge[i]]) * scale);
+        }
+    }
+
+    void DrawCube(Vector3 bl, float radius)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            Gizmos.DrawSphere(transform.position + (bl + cubeCorners[i]) * scale, radius);            
         }
     }
 }

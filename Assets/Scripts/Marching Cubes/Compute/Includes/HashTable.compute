@@ -1,0 +1,85 @@
+#define THREAD_BLOCKS 256
+#define GROUP_SIZE 64
+#define EMPTY 0xffffffff
+
+RWStructuredBuffer<uint2> b_hash;
+
+extern uint e_hashBufferSize;
+
+//********************************
+// Murmurhash3 32Bit Hash Function
+// Author: Austin Appleby
+// Lastmod: 1/8/2016
+// Liscence: MIT License
+// Added 8/4/2021
+uint hash(uint k)
+{
+    k ^= k >> 16;
+    k *= 0x85ebca6b;
+    k ^= k >> 13;
+    k *= 0xc2b2ae35;
+    k ^= k >> 16;
+    return k & (e_hashBufferSize - 1);
+}
+
+void HashInsert(uint key, uint value)
+{
+    uint slot = hash(key);
+    while (true)
+    {
+        uint prev;
+        InterlockedCompareExchange(b_hash[slot].x, EMPTY, key, prev);
+        if (prev == EMPTY || prev == key)
+        {
+            b_hash[slot].y = value;
+            return;
+        }
+        slot = (slot + 1) & (e_hashBufferSize - 1);
+    }
+}
+
+uint HashLookup(uint key)
+{
+    uint slot = hash(key);
+    while (true)
+    {
+        if (b_hash[slot].x == key)
+        {
+            return b_hash[slot].y;
+        }
+        if (b_hash[slot].x == EMPTY)
+        {
+            return EMPTY;
+        }
+        slot = (slot + 1) & (e_hashBufferSize - 1);
+    }
+    return EMPTY;
+}
+
+void HashDelete(uint key)
+{
+    uint slot = hash(key);
+    while (true)
+    {
+        if (b_hash[slot].x == EMPTY)
+        {
+            return;
+        }
+        if (b_hash[slot].x == key)
+        {
+            b_hash[slot].y = EMPTY;
+            return;
+        }
+        slot = (slot + 1) & (e_hashBufferSize - 1);
+    }
+}
+
+//In order for the Hash Table to work, it must be initialized to the empty sentinel value
+[numthreads(GROUP_SIZE, 1, 1)]
+void Initialize(uint3 id : SV_DispatchThreadID)
+{
+    for (uint i = id.x; i < e_hashBufferSize; i += GROUP_SIZE * THREAD_BLOCKS)
+    {
+        b_hash[i] = uint2(EMPTY, EMPTY);
+    }
+}
