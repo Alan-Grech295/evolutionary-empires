@@ -1,17 +1,24 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.IO.Compression;
+using Unity.Entities.UniversalDelegates;
 using Unity.Mathematics;
 using UnityEngine;
 
 [ExecuteInEditMode]
 public class SingleCubeTest : MonoBehaviour
 {
-    public bool[] corners = new bool[8];
-    [Range(0, 11)]
-    public int edgeIndex;
-    [Range(0, 26)]
-    public int cubeIndex;
+    public int size = 4;
     public float scale = 1.0f;
+
+    public int hashSearch;
+
+    [Header("Debug")]
+    public Vector3Int cubePos;
+    public int edgeIndex;
+
+    [Header("Outputs")]
+    public uint edgeHash;
 
     private Vector3[] cubeCorners = new Vector3[8]
     {
@@ -29,6 +36,8 @@ public class SingleCubeTest : MonoBehaviour
     // The edge index can be obtained from the triangulation table further below.
     static int[] cornerIndexAFromEdge = new int[12]{ 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3 };
     static int[] cornerIndexBFromEdge = new int[12]{ 1, 2, 3, 0, 5, 6, 7, 4, 4, 5, 6, 7 };
+
+    Vector2Int[] edgeIndexCorrection;
 
     // Values from http://paulbourke.net/geometry/polygonise/
     // Lookup table giving the index of the edge that each vertex lies on for any cube configuration.
@@ -304,97 +313,144 @@ public class SingleCubeTest : MonoBehaviour
 
     private void OnDrawGizmos()
     {
-        /*for(int i = 0; i < 8; i++)
+        edgeIndexCorrection = new Vector2Int[12]
         {
-            Gizmos.color = corners[i] ? Color.white : Color.black;
-            Gizmos.DrawSphere(transform.position + cubeCorners[i] * scale, 0.1f);
-        }
-
-        // Calculating the index of the cube
-        cubeIndex = 0;
-        if (corners[0])
-            cubeIndex |= 1;
-        if (corners[1])
-            cubeIndex |= 2;
-        if (corners[2])
-            cubeIndex |= 4;
-        if (corners[3])
-            cubeIndex |= 8;
-        if (corners[4])
-            cubeIndex |= 16;
-        if (corners[5])
-            cubeIndex |= 32;
-        if (corners[6])
-            cubeIndex |= 64;
-        if (corners[7])
-            cubeIndex |= 128;
-
-        int[] edgeIndices = triangulation[cubeIndex];
-        for(int i = 0; edgeIndices[i] != -1; i += 3)
-        {
-            int a0 = cornerIndexAFromEdge[edgeIndices[i]];
-            int b0 = cornerIndexBFromEdge[edgeIndices[i]];
-
-            int a1 = cornerIndexAFromEdge[edgeIndices[i + 1]];
-            int b1 = cornerIndexBFromEdge[edgeIndices[i + 1]];
-
-            int a2 = cornerIndexAFromEdge[edgeIndices[i + 2]];
-            int b2 = cornerIndexBFromEdge[edgeIndices[i + 2]];
-
-            Gizmos.color = Color.red;
-            Vector3 v1 = CreateVertex(cubeCorners[a0], cubeCorners[b0]) + transform.position;
-            Vector3 v2 = CreateVertex(cubeCorners[a1], cubeCorners[b1]) + transform.position;
-            Vector3 v3 = CreateVertex(cubeCorners[a2], cubeCorners[b2]) + transform.position;
-            Gizmos.DrawSphere(v1, 0.05f);
-            Gizmos.DrawSphere(v2, 0.05f);
-            Gizmos.DrawSphere(v3, 0.05f);
-
-            Gizmos.DrawLine(v1, v2);
-            Gizmos.DrawLine(v2, v3);
-            Gizmos.DrawLine(v3, v1);
-        }*/
-
-        Vector3 cubeCentre = new Vector3();
-
+            new Vector2Int(0,                   0),   // Local edge
+            new Vector2Int((size + 2) * (size + 2),         1),
+            new Vector2Int(1,                   0),
+            new Vector2Int(0,                   1),   // Local Edge
+            new Vector2Int((size + 2),                0),
+            new Vector2Int((size + 2) * (size + 2) + (size + 2),  1),
+            new Vector2Int((size + 2) + 1,            0),
+            new Vector2Int((size + 2),                1),
+            new Vector2Int(0,                   2),   // Local Edge
+            new Vector2Int((size + 2) * (size + 2),         2),
+            new Vector2Int((size + 2) * (size + 2) + 1,     2),
+            new Vector2Int(1,                   2)
+        };
         Gizmos.color = Color.white;
-        for (int y = -1; y <= 1; y++)
+        for(int z = 0; z < size + 1; z++)
         {
-            for (int z = -1; z <= 1; z++)
+            for (int y = 0; y < size + 1; y++)
             {
-                for (int x = -1; x <= 1; x++)
+                for (int x = 0; x < size + 1; x++)
                 {
-                    if((x + 1) + (y + 1) * 3 + (z + 1) * 9 == cubeIndex)
-                    {
-                        cubeCentre = new Vector3(x, y, z);
-                        continue;
-                    }
-
-                    DrawCube(new Vector3(x, y, z), 0.1f);
+                    Gizmos.DrawSphere(transform.position + new Vector3(x, y, z) * scale, 0.1f);
                 }
             }
         }
 
+        HashSet<int> edgeIndices = new HashSet<int>();
+
+        for (int z = 0; z < size; z++)
+        {
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    Gizmos.color = Color.red;
+                    Vector3 bl = transform.position + new Vector3(x, y, z) * scale;
+                    DrawEdge(bl, x, y, z, 0, ref edgeIndices);
+                    DrawEdge(bl, x, y, z, 3, ref edgeIndices);
+                    DrawEdge(bl, x, y, z, 8, ref edgeIndices);
+
+                    bool edgeX = x == size - 1;
+                    bool edgeY = y == size - 1;
+                    bool edgeZ = z == size - 1;
+
+                    if (edgeX)
+                    {
+                        Gizmos.color = Color.green;
+                        DrawEdge(bl, x, y, z, 2, ref edgeIndices);
+                        DrawEdge(bl, x, y, z, 11, ref edgeIndices);
+                    }
+
+                    if (edgeY)
+                    {
+                        Gizmos.color = Color.blue;
+                        DrawEdge(bl, x, y, z, 4, ref edgeIndices);
+                        DrawEdge(bl, x, y, z, 7, ref edgeIndices);
+                    }
+
+                    if (edgeZ)
+                    {
+                        Gizmos.color = Color.magenta;
+                        DrawEdge(bl, x, y, z, 1, ref edgeIndices);
+                        DrawEdge(bl, x, y, z, 9, ref edgeIndices);
+                    }
+
+                    if(edgeX && edgeY)
+                    {
+                        Gizmos.color = Color.cyan;
+                        DrawEdge(bl, x, y, z, 6, ref edgeIndices);
+                    }
+
+                    if (edgeY && edgeZ)
+                    {
+                        Gizmos.color = Color.yellow;
+                        DrawEdge(bl, x, y, z, 5, ref edgeIndices);
+                    }
+
+                    if (edgeX && edgeZ)
+                    {
+                        Gizmos.color = Color.white;
+                        DrawEdge(bl, x, y, z, 10, ref edgeIndices);
+                    }
+                }
+            }
+        }
+
+        Gizmos.color = Color.black;
+        DrawEdge(transform.position + (Vector3)cubePos * scale, cubePos.x, cubePos.y, cubePos.z, edgeIndex, ref edgeIndices);
+
+        /*int tempCubeIndex = cubeIndex;
+        int cubeZ = Mathf.FloorToInt((float)tempCubeIndex / (size * size));
+        tempCubeIndex %= size * size;
+        int cubeY = Mathf.FloorToInt((float)tempCubeIndex / size);
+        tempCubeIndex %= size;
+        int cubeX = tempCubeIndex;
+
         Gizmos.color = Color.red;
-        DrawCube(cubeCentre, 0.1f);
+        foreach(Vector3 corner in cubeCorners)
+        {
+            Gizmos.DrawSphere(transform.position + (corner + new Vector3(cubeX, cubeY, cubeZ)) * scale, 0.1f);
+        }
 
         Gizmos.color = Color.green;
-        for (int i = 0; i < 12; i++)
+        for(int i = 0; i < 12; i++)
         {
-            if (i == edgeIndex)
-                Gizmos.color = Color.cyan;
-            else
-                Gizmos.color = Color.green;
-
-            Gizmos.DrawLine(transform.position + (cubeCentre + cubeCorners[cornerIndexAFromEdge[i]]) * scale,
-                transform.position + (cubeCentre + cubeCorners[cornerIndexBFromEdge[i]]) * scale);
+            Gizmos.DrawLine(transform.position + (cubeCorners[cornerIndexAFromEdge[i]] + new Vector3(cubeX, cubeY, cubeZ)) * scale,
+                            transform.position + (cubeCorners[cornerIndexBFromEdge[i]] + new Vector3(cubeX, cubeY, cubeZ)) * scale);
         }
+
+        Gizmos.color = Color.magenta;
+        Gizmos.DrawLine(transform.position + (cubeCorners[cornerIndexAFromEdge[edgeIndex]] + new Vector3(cubeX, cubeY, cubeZ)) * scale,
+                        transform.position + (cubeCorners[cornerIndexBFromEdge[edgeIndex]] + new Vector3(cubeX, cubeY, cubeZ)) * scale);
+
+        // Calculating the edge hash
+        Vector2Int hashCorrection = edgeIndexCorrection[edgeIndex];
+        edgeHash = (uint)(cubeIndex + hashCorrection.x + hashCorrection.y);*/
     }
 
-    void DrawCube(Vector3 bl, float radius)
+    void DrawEdge(Vector3 bl, int x, int y, int z, int edgeIndex, ref HashSet<int> edgeIndices)
     {
-        for (int i = 0; i < 8; i++)
+        x++;
+        y++;
+        z++;
+        Vector2Int hashCorrection = edgeIndexCorrection[edgeIndex];
+        int hash = (x + y * (size + 2) + z * (size + 2) * (size + 2) + hashCorrection.x) * 3 + hashCorrection.y;
+        if(hash == hashSearch)
         {
-            Gizmos.DrawSphere(transform.position + (bl + cubeCorners[i]) * scale, radius);            
+            //Debug.Log($"({x}, {y}, {z}, edge: {edgeIndex}, hash: {hash})");
         }
+        if (edgeIndices.Contains(hash))
+        {
+            //Debug.LogError($"Hash found twice ({x}, {y}, {z}, edge: {edgeIndex}, hash: {hash})");
+        }
+        else
+        {
+            edgeIndices.Add(hash);
+        }
+        Gizmos.DrawLine(bl + cubeCorners[cornerIndexAFromEdge[edgeIndex]] * scale, bl + cubeCorners[cornerIndexBFromEdge[edgeIndex]] * scale);
     }
 }

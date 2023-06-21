@@ -6,6 +6,8 @@ RWTexture3D<float> DensityTexture;
 int textureSize;
 float noiseScale;
 
+float3 offset;
+
 [numthreads(8,8,8)]
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
@@ -14,5 +16,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
         return;
     }
     
-    DensityTexture[id] = ((float) id.y / textureSize * 4) - 0.5f + (SimplexNoise(id * noiseScale) * 0.2f);
+    float3 pos = id + offset;
+    
+    DensityTexture[id] = (pos.y / textureSize * 4) - 0.5f + (SimplexNoise(pos * noiseScale) * 0.2f);
 }

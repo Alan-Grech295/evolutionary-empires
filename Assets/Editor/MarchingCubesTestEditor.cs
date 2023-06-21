@@ -1,9 +1,11 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using UnityEditor;
 using UnityEngine;
 
 [CustomEditor(typeof(MarchingCubesTest))]
+[CanEditMultipleObjects]
 public class MarchingCubesTestEditor : Editor
 {
     private float slice = 0;
@@ -25,7 +27,31 @@ public class MarchingCubesTestEditor : Editor
 
         if (GUILayout.Button("Generate Mesh"))
         {
-            marchingCubesTest.GenerateMesh();
+            foreach(var gameObject in Selection.gameObjects)
+            {
+                if (gameObject.GetComponent<MarchingCubesTest>() == null)
+                    continue;
+
+                gameObject.GetComponent<MarchingCubesTest>().GenerateMesh();
+            }
+        }
+
+        if(GUILayout.Button("Get Generation Average"))
+        {
+            Stopwatch stopwatch = new Stopwatch();
+            stopwatch.Start();
+            for (int i = 0; i < 50; i++)
+            {
+                foreach (var gameObject in Selection.gameObjects)
+                {
+                    if (gameObject.GetComponent<MarchingCubesTest>() == null)
+                        continue;
+
+                    gameObject.GetComponent<MarchingCubesTest>().GenerateMesh();
+                }
+            }
+            stopwatch.Stop();
+            UnityEngine.Debug.Log($"Average generation time: {stopwatch.Elapsed.TotalMilliseconds / 50d}ms");
         }
 
         //marchingCubesTest.GenerateMesh();

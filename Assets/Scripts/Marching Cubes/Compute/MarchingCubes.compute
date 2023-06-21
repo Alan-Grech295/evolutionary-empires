@@ -1,20 +1,61 @@
-#pragma kernel CSMain
+#pragma kernel CreateVerts
 #pragma kernel Initialize
+#pragma kernel Finalize
 
 RWTexture3D<float> DensityTexture;
 RWStructuredBuffer<float3> Vertices;
+RWStructuredBuffer<float3> Normals;
 RWStructuredBuffer<int> Indices;
+int2 EdgeHashCorrections[12];
 int size;
 float surfaceLevel;
+
+// Used in the finalization
+int numTris;
+
+AppendStructuredBuffer<float> Debug;
+
+static const bool isLocalEdge[8][12] =
+{
+    { true,     false, false,  true,  false,  false,  false,  false,  true,  false,  false,  false },
+    { true,     false, true,   true,  false,  false,  false,  false,  true,  false,  false,  true },
+    { true,     false, false,  true,  true,   false,  false,  true,   true,  false,  false,  false },
+    { true,     false, true,   true,  true,   false,  true,   true,   true,  false,  false,  true },
+    { true,     true,  false,  true,  false,  false,  false,  false,  true,  true,   false,  false },
+    { true,     true,  true,   true,  false,  false,  false,  false,  true,  true,   true,   true },
+    { true,     true,  false,  true,  true,   true,   false,  true,   true,  true,   false,  false },
+    { true,     true,  true,   true,  true,   true,   true,   true,   true,  true,   true,   true }
+};
 
 #include "Includes/MarchTable.compute"
 #include "Includes/HashTable.compute"
 
+// Taken from Sebastian Lague https://github.com/SebLague/Terraforming/blob/main/Assets/Marching%20Cubes/Scripts/Compute/MarchingCubes.compute
+float3 calculateNormal(int3 coord)
+{
+    int3 offsetX = int3(1, 0, 0);
+    int3 offsetY = int3(0, 1, 0);
+    int3 offsetZ = int3(0, 0, 1);
+
+    float dx = DensityTexture[coord + offsetX] - DensityTexture[coord - offsetX];
+    float dy = DensityTexture[coord + offsetY] - DensityTexture[coord - offsetY];
+    float dz = DensityTexture[coord + offsetZ] - DensityTexture[coord - offsetZ];
+
+    return normalize(float3(dx, dy, dz));
+}
+
 // TODO: Calculate normals
-float3 createVertex(float4 a, float4 b)
+void AddVertex(float4 a, float4 b, int index)
 {
     float t = (surfaceLevel - a.w) / (b.w - a.w);
-    return a.xyz + t * (b.xyz - a.xyz);
+    float3 vert = a.xyz + t * (b.xyz - a.xyz);
+    
+    float3 normalA = calculateNormal(a.xyz);
+    float3 normalB = calculateNormal(b.xyz);
+    float3 normal = normalize(normalA + t * (normalB - normalA));
+    
+    Vertices[index] = vert;
+    Normals[index] = normal;
 }
 
 // Modified hash table insert to increment the vertex buffer counter as soon as it is being inserted
@@ -39,46 +80,65 @@ uint HashInsertVert(uint key)
 
 int AddVertex(uint3 id, int edgeIndex, float4 cubeCorners[8])
 {
-    uint key = (id.x + id.y * size + id.z * size * size) * (edgeIndex + 1);
-    uint index = HashLookup(key);
-    if(index != EMPTY)
-        return index;
+    int2 edgeCorrection = EdgeHashCorrections[edgeIndex];
+    uint3 inflatedID = id + 1;
+    uint key = (inflatedID.x + inflatedID.y * (size + 2) + inflatedID.z * (size + 2) * (size + 2) + edgeCorrection.x) * 3 + edgeCorrection.y;
     
-    index = HashInsertVert(key);
+    if (!(edgeIndex == 0 || edgeIndex == 3 || edgeIndex == 8))
+    {
+        uint check = 0;
+        if (id.x == size - 1)
+            check |= 1;
+        if (id.y == size - 1)
+            check |= 2;
+        if (id.z == size - 1)
+            check |= 4;
+        if (!isLocalEdge[check][edgeIndex])
+            return key;
+    }
     
-    /*index = Vertices.IncrementCounter();
-    HashInsert(b_hash, key, index, e_hashBufferSize);*/
+    uint index = HashInsertVert(key);
     
     float4 a = cubeCorners[cornerIndexAFromEdge[edgeIndex]];
     float4 b = cubeCorners[cornerIndexBFromEdge[edgeIndex]];
     
-    Vertices[index] = createVertex(a, b);
-    return index;
+    AddVertex(a, b, index);
+    
+    return key;
+}
+
+[numthreads(512, 1, 1)]
+void Finalize(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numTris)
+        return;
+    
+    Indices[id.x] = HashLookup(Indices[id.x]);
 }
 
 [numthreads(8, 8, 8)]
-void CSMain(uint3 id : SV_DispatchThreadID)
+void CreateVerts(uint3 id : SV_DispatchThreadID)
 {
     if (id.x > size || id.y > size || id.z > size)
     {
         return;
     }
     
-    int3 coord = id;
+    int3 coord = id + 1;
     
     float4 cubeCorners[8] =
     {
         // Bottom 4 corners
-        float4(coord.xyz, DensityTexture[id]),
-        float4(coord.xyz + uint3(0, 0, 1), DensityTexture[id + uint3(0, 0, 1)]),
-        float4(coord.xyz + uint3(1, 0, 1), DensityTexture[id + uint3(1, 0, 1)]),
-        float4(coord.xyz + uint3(1, 0, 0), DensityTexture[id + uint3(1, 0, 0)]),
+        float4(coord.xyz, DensityTexture[id + 1]),
+        float4(coord.xyz + uint3(0, 0, 1), DensityTexture[id + 1 + uint3(0, 0, 1)]),
+        float4(coord.xyz + uint3(1, 0, 1), DensityTexture[id + 1 + uint3(1, 0, 1)]),
+        float4(coord.xyz + uint3(1, 0, 0), DensityTexture[id + 1 + uint3(1, 0, 0)]),
         
         // Top 4 corners
-        float4(coord.xyz + uint3(0, 1, 0), DensityTexture[id + uint3(0, 1, 0)]),
-        float4(coord.xyz + uint3(0, 1, 1), DensityTexture[id + uint3(0, 1, 1)]),
-        float4(coord.xyz + uint3(1, 1, 1), DensityTexture[id + uint3(1, 1, 1)]),
-        float4(coord.xyz + uint3(1, 1, 0), DensityTexture[id + uint3(1, 1, 0)]),
+        float4(coord.xyz + uint3(0, 1, 0), DensityTexture[id + 1 + uint3(0, 1, 0)]),
+        float4(coord.xyz + uint3(0, 1, 1), DensityTexture[id + 1 + uint3(0, 1, 1)]),
+        float4(coord.xyz + uint3(1, 1, 1), DensityTexture[id + 1 + uint3(1, 1, 1)]),
+        float4(coord.xyz + uint3(1, 1, 0), DensityTexture[id + 1 + uint3(1, 1, 0)]),
     };
     
     // Calculating the index of the cube
@@ -110,8 +170,8 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     {        
         int triIndex = Indices.IncrementCounter();
         
-        Indices[triIndex * 3] = AddVertex(id, edgeIndices[i], cubeCorners);
-        Indices[triIndex * 3 + 1] = AddVertex(id, edgeIndices[i + 1], cubeCorners);
-        Indices[triIndex * 3 + 2] = AddVertex(id, edgeIndices[i + 2], cubeCorners);
+        Indices[triIndex * 3]       = AddVertex(id, edgeIndices[i], cubeCorners);
+        Indices[triIndex * 3 + 1]   = AddVertex(id, edgeIndices[i + 1], cubeCorners);
+        Indices[triIndex * 3 + 2]   = AddVertex(id, edgeIndices[i + 2], cubeCorners);
     }
 }
