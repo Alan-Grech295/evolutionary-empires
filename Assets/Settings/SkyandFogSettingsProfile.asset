@@ -146,7 +146,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7e9e4ed5a6f56fb4ebd693e39684f36f, type: 3}
   m_Name: VolumetricClouds
   m_EditorClassIdentifier: 
-  active: 0
+  active: 1
   enable:
     m_OverrideState: 1
     m_Value: 1
@@ -444,6 +444,22 @@ MonoBehaviour:
   m_ObsoleteShapeOffsetZ:
     m_OverrideState: 0
     m_Value: 0
+--- !u!114 &-4358829770597270154
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2f1984a7ac01bf84b86559f7595cdc68, type: 3}
+  m_Name: LightCluster
+  m_EditorClassIdentifier: 
+  active: 1
+  cameraClusterRange:
+    m_OverrideState: 1
+    m_Value: 10
 --- !u!114 &-4151792930034644520
 MonoBehaviour:
   m_ObjectHideFlags: 3
@@ -550,6 +566,9 @@ MonoBehaviour:
   - {fileID: -4151792930034644520}
   - {fileID: 7642060734654139733}
   - {fileID: -4434461622001655966}
+  - {fileID: -4358829770597270154}
+  - {fileID: 5004320718548877635}
+  - {fileID: 4699651896720311425}
 --- !u!114 &1142777632297148762
 MonoBehaviour:
   m_ObjectHideFlags: 3
@@ -581,6 +600,127 @@ MonoBehaviour:
   fogType:
     m_OverrideState: 1
     m_Value: 0
+--- !u!114 &4699651896720311425
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9008a067f4d626c4d8bc4bc48f04bb89, type: 3}
+  m_Name: ScreenSpaceAmbientOcclusion
+  m_EditorClassIdentifier: 
+  active: 1
+  quality:
+    m_OverrideState: 0
+    m_Value: 1
+  rayTracing:
+    m_OverrideState: 0
+    m_Value: 0
+  intensity:
+    m_OverrideState: 0
+    m_Value: 0
+  directLightingStrength:
+    m_OverrideState: 0
+    m_Value: 0
+  radius:
+    m_OverrideState: 0
+    m_Value: 2
+  spatialBilateralAggressiveness:
+    m_OverrideState: 0
+    m_Value: 0.15
+  temporalAccumulation:
+    m_OverrideState: 0
+    m_Value: 1
+  ghostingReduction:
+    m_OverrideState: 0
+    m_Value: 0.5
+  blurSharpness:
+    m_OverrideState: 0
+    m_Value: 0.1
+  layerMask:
+    m_OverrideState: 0
+    m_Value:
+      serializedVersion: 2
+      m_Bits: 4294967295
+  specularOcclusion:
+    m_OverrideState: 0
+    m_Value: 0.5
+  occluderMotionRejection:
+    m_OverrideState: 0
+    m_Value: 1
+  receiverMotionRejection:
+    m_OverrideState: 0
+    m_Value: 1
+  m_StepCount:
+    m_OverrideState: 0
+    m_Value: 6
+  m_FullResolution:
+    m_OverrideState: 0
+    m_Value: 0
+  m_MaximumRadiusInPixels:
+    m_OverrideState: 0
+    m_Value: 40
+  m_BilateralUpsample:
+    m_OverrideState: 0
+    m_Value: 1
+  m_DirectionCount:
+    m_OverrideState: 0
+    m_Value: 2
+  m_RayLength:
+    m_OverrideState: 0
+    m_Value: 3
+  m_SampleCount:
+    m_OverrideState: 0
+    m_Value: 2
+  m_Denoise:
+    m_OverrideState: 0
+    m_Value: 1
+  m_DenoiserRadius:
+    m_OverrideState: 0
+    m_Value: 0.5
+--- !u!114 &5004320718548877635
+MonoBehaviour:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d877a03bef431a847adca8ab343db3e1, type: 3}
+  m_Name: RayTracingSettings
+  m_EditorClassIdentifier: 
+  active: 1
+  rayBias:
+    m_OverrideState: 0
+    m_Value: 0.001
+  distantRayBias:
+    m_OverrideState: 0
+    m_Value: 0.001
+  extendShadowCulling:
+    m_OverrideState: 0
+    m_Value: 1
+  extendCameraCulling:
+    m_OverrideState: 0
+    m_Value: 0
+  directionalShadowRayLength:
+    m_OverrideState: 0
+    m_Value: 1000
+  directionalShadowFallbackIntensity:
+    m_OverrideState: 0
+    m_Value: 1
+  buildMode:
+    m_OverrideState: 0
+    m_Value: 0
+  cullingMode:
+    m_OverrideState: 0
+    m_Value: 0
+  cullingDistance:
+    m_OverrideState: 0
+    m_Value: 1000
 --- !u!114 &7642060734654139733
 MonoBehaviour:
   m_ObjectHideFlags: 3

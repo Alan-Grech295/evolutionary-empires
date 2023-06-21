@@ -50,8 +50,8 @@ void AddVertex(float4 a, float4 b, int index)
     float t = (surfaceLevel - a.w) / (b.w - a.w);
     float3 vert = a.xyz + t * (b.xyz - a.xyz);
     
-    float3 normalA = calculateNormal(a.xyz);
-    float3 normalB = calculateNormal(b.xyz);
+    float3 normalA = -calculateNormal(a.xyz);
+    float3 normalB = -calculateNormal(b.xyz);
     float3 normal = normalize(normalA + t * (normalB - normalA));
     
     Vertices[index] = vert;
@@ -170,8 +170,8 @@ void CreateVerts(uint3 id : SV_DispatchThreadID)
     {        
         int triIndex = Indices.IncrementCounter();
         
-        Indices[triIndex * 3]       = AddVertex(id, edgeIndices[i], cubeCorners);
+        Indices[triIndex * 3 + 2]       = AddVertex(id, edgeIndices[i], cubeCorners);
         Indices[triIndex * 3 + 1]   = AddVertex(id, edgeIndices[i + 1], cubeCorners);
-        Indices[triIndex * 3 + 2]   = AddVertex(id, edgeIndices[i + 2], cubeCorners);
+        Indices[triIndex * 3]   = AddVertex(id, edgeIndices[i + 2], cubeCorners);
     }
 }
