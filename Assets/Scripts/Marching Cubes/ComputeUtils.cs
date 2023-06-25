@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using Unity.Mathematics;
@@ -26,5 +27,31 @@ public class ComputeUtils
         {
             buffer.Release();
         }
+    }
+
+    public static Tuple<T[], int> ReadData<T>(ComputeBuffer src, ComputeBuffer count, int multiplier = 1)
+    {
+        int[] countData = new int[1];
+        ComputeBuffer.CopyCount(src, count, 0);
+        count.GetData(countData);
+
+        T[] values = new T[countData[0] * multiplier];
+        src.GetData(values);
+
+        return new Tuple<T[], int>(values, countData[0] * multiplier);
+    }
+
+    public static int GetSize(ComputeBuffer src, ComputeBuffer count)
+    {
+        int[] countData = new int[1];
+        ComputeBuffer.CopyCount(src, count, 0);
+        count.GetData(countData);
+
+        return countData[0];
+    }
+
+    public static int GetStride<T>()
+    {
+        return System.Runtime.InteropServices.Marshal.SizeOf(typeof(T));
     }
 }

@@ -1,20 +1,23 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.InputSystem.Android;
 using UnityEngine.Rendering;
 
 public class ChunkManager : MonoBehaviour
 {
-    public int numVoxels = 32;
-    public float chunkScale = 1.0f;
+    //public int numVoxels = 32;
+    public int[] lodNumVoxels;
+    public int chunkSize = 32;
     public int batchCubeSize = 3;
     public float noiseScale = 0.1f;
     public float surfaceLevel = 0.5f;
     public float maxChunkTimeMillis = 4f;
     // Distance to load in chunks
-    public int chunkLoadDistance;
+    public Vector3Int chunkLoadDistance;
     public float noiseMultiplier = 1.0f;
 
     public Transform playerTransform;
@@ -36,6 +39,8 @@ public class ChunkManager : MonoBehaviour
     private int k_CreateVerts;
     private int k_Finalize;
 
+    private ComputeBuffer densityTypeFlags;
+
     private ComputeBuffer vertHashTable;
     private ComputeBuffer vertexBuffer;
     private ComputeBuffer indicesBuffer;
@@ -52,14 +57,19 @@ public class ChunkManager : MonoBehaviour
     private bool restartGeneration = false;
     private bool runningGeneration = false;
 
+    Queue<Vector3> positionQueue;
+
     // Start is called before the first frame update
     void Start()
     {
         visibleChunks[0] = new HashSet<Vector3>();
         visibleChunks[1] = new HashSet<Vector3>();
 
+        positionQueue = new Queue<Vector3>(chunkLoadDistance.x * chunkLoadDistance.z);
+
         // Calculating the size of the hash table buffer
-        HASH_BUFFER_SIZE = numVoxels * numVoxels * numVoxels;
+        int maxVoxels = lodNumVoxels[0];
+        HASH_BUFFER_SIZE = maxVoxels * maxVoxels * maxVoxels;
         // Calculates the nearest power of 2
         HASH_BUFFER_SIZE--;
         HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 1;
@@ -83,7 +93,7 @@ public class ChunkManager : MonoBehaviour
     // Update is called once per frame
     void Update()
     {
-        if((pastPos - playerTransform.position).sqrMagnitude >= numVoxels * numVoxels)
+        if((pastPos - playerTransform.position).sqrMagnitude >= chunkSize * chunkSize)
         {
             //StopAllCoroutines();
             //StartCoroutine(UpdateChunks());
@@ -98,15 +108,53 @@ public class ChunkManager : MonoBehaviour
         }
     }
 
+    // Used for the editor
+    public void ReloadChunksImmediate()
+    {
+        // Calculating the size of the hash table buffer
+        int maxVoxels = lodNumVoxels[0];
+        HASH_BUFFER_SIZE = maxVoxels * maxVoxels * maxVoxels;
+        // Calculates the nearest power of 2
+        HASH_BUFFER_SIZE--;
+        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 1;
+        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 2;
+        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 4;
+        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 8;
+        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 16;
+        HASH_BUFFER_SIZE++;
+
+        THREAD_BLOCKS = HASH_BUFFER_SIZE / 64;
+
+        k_HashInit = marchingCubesCompute.FindKernel("Initialize");
+        k_CreateVerts = marchingCubesCompute.FindKernel("CreateVerts");
+        k_Finalize = marchingCubesCompute.FindKernel("Finalize");
+
+        InitializeComputeBuffers();
+
+        chunks = new Dictionary<Vector3, Chunk>();
+        batches = new Dictionary<Vector3Int, GameObject>();
+        visibleChunks[0] = new HashSet<Vector3>();
+        visibleChunks[1] = new HashSet<Vector3>();
+        positionQueue = new Queue<Vector3>();
+
+        while (transform.childCount > 0)
+        {
+            DestroyImmediate(transform.GetChild(0).gameObject);
+        }
+
+        var chunkEnum = UpdateChunks();
+        while (chunkEnum.MoveNext()) { }
+
+        ComputeUtils.Release(vertexBuffer, indicesBuffer, countBuffer, vertHashTable, normalsBuffer);
+    }
+
     IEnumerator UpdateChunks()
     {
         runningGeneration = true;
 
-        float chunkSize = numVoxels * chunkScale;
+        Vector3Int actualChunkLoadDist = chunkLoadDistance * chunkSize;
 
         pastPos = playerTransform.position;
-        int maxSqrDist = chunkLoadDistance * numVoxels * chunkLoadDistance * numVoxels;
-        Queue<Vector3> positionQueue = new Queue<Vector3>();
         positionQueue.Enqueue(GetClosestChunk(playerTransform.position));
         Stopwatch stopwatch = new Stopwatch();
         stopwatch.Start();
@@ -116,15 +164,24 @@ public class ChunkManager : MonoBehaviour
             Vector3 chunkPos = positionQueue.Dequeue();
             visibleChunks[currentVisibleChunkBuffer].Add(chunkPos);
             visibleChunks[1 - currentVisibleChunkBuffer].Remove(chunkPos);
+
+            Vector3 chunkDist = (chunkPos - playerTransform.position) / chunkSize;
+            float maxDist = Mathf.Clamp01(Mathf.Max(Mathf.Abs(chunkDist.x / chunkLoadDistance.x),
+                                      Mathf.Abs(chunkDist.y / chunkLoadDistance.y), 
+                                      Mathf.Abs(chunkDist.z / chunkLoadDistance.z)));
+
+            int lod = Mathf.RoundToInt(maxDist * (lodNumVoxels.Length - 1));
+            int numVoxels = lodNumVoxels[lod];
+
             if (chunks.ContainsKey(chunkPos))
             {
                 chunks[chunkPos].gameObject.SetActive(true);
             }
             else
             {
-                GameObject chunkGO = new GameObject($"Chunk {chunkPos}");
+                GameObject chunkGO = new GameObject($"Chunk {chunkPos} LOD: {lod}");
                 chunkGO.transform.position = chunkPos;
-                chunkGO.transform.localScale = Vector3.one * chunkScale;
+                chunkGO.transform.localScale = Vector3.one * ((float)chunkSize / numVoxels);
                 chunkGO.isStatic = true;
 
                 Vector3Int batchPosition = GetBatchPosition(chunkPos);
@@ -153,22 +210,26 @@ public class ChunkManager : MonoBehaviour
                 chunkGO.AddComponent<MeshCollider>();
 
                 Chunk chunk = chunkGO.AddComponent<Chunk>();
-                chunk.Recreate(GenerateMesh(chunkPos), terrainMat);
+                chunk.Recreate(GenerateMesh(chunkPos, numVoxels), terrainMat, lod);
 
                 chunks.Add(chunkPos, chunk);
             }
 
-            for (float z = -chunkSize; z <= chunkSize; z += chunkSize)
+            for (int z = -chunkSize; z <= chunkSize; z += chunkSize)
             {
-                for (float y = -chunkSize; y <= chunkSize; y += chunkSize)
+                for (int y = -chunkSize; y <= chunkSize; y += chunkSize)
                 {
-                    for (float x = -chunkSize; x <= chunkSize; x += chunkSize)
+                    for (int x = -chunkSize; x <= chunkSize; x += chunkSize)
                     {
                         if (x == 0 && y == 0 && z == 0)
                             continue;
 
                         Vector3 newChunkPos = chunkPos + new Vector3(x, y, z);
-                        if ((newChunkPos - playerTransform.position).sqrMagnitude <= maxSqrDist && !positionQueue.Contains(newChunkPos) && !visibleChunks[currentVisibleChunkBuffer].Contains(newChunkPos))
+                        Vector3 dist = newChunkPos - playerTransform.position;
+                        dist = new Vector3(Mathf.Abs(dist.x), Mathf.Abs(dist.y), Mathf.Abs(dist.z));
+
+                        if (dist.x <= actualChunkLoadDist.x && dist.y <= actualChunkLoadDist.y && dist.z <= actualChunkLoadDist.z && 
+                            !positionQueue.Contains(newChunkPos) && !visibleChunks[currentVisibleChunkBuffer].Contains(newChunkPos))
                         {
                             positionQueue.Enqueue(newChunkPos);
                         }
@@ -210,13 +271,13 @@ public class ChunkManager : MonoBehaviour
 
     Vector3 GetClosestChunk(Vector3 position)
     {
-        position /= (numVoxels * chunkScale);
-        return new Vector3(Mathf.Round(position.x), Mathf.Round(position.y), Mathf.Round(position.z)) * numVoxels * chunkScale;
+        position /= chunkSize;
+        return new Vector3(Mathf.Round(position.x), Mathf.Round(position.y), Mathf.Round(position.z)) * chunkSize;
     }
 
     Vector3Int GetBatchPosition(Vector3 position)
     {
-        position /= (numVoxels * chunkScale * batchCubeSize);
+        position /= chunkSize * batchCubeSize;
         return new Vector3Int(Mathf.FloorToInt(position.x), Mathf.FloorToInt(position.y), Mathf.FloorToInt(position.z));
     }
 
@@ -228,10 +289,11 @@ public class ChunkManager : MonoBehaviour
     // not have been created yet.
     // In the final pass the index buffer values are converted from the edge hashes to the actual
     // vertex index.
-    public Mesh GenerateMesh(Vector3 offset)
+    public Mesh GenerateMesh(Vector3 offset, int numVoxels)
     {
         // Generates the 3D noise texture
-        GenerateNoiseTex(offset);
+        if (!GenerateNoiseTex(offset, numVoxels))
+            return new Mesh();
 
         Mesh mesh = new Mesh();
         mesh.indexFormat = IndexFormat.UInt32;
@@ -316,18 +378,27 @@ public class ChunkManager : MonoBehaviour
         return mesh;
     }
 
-    public void GenerateNoiseTex(Vector3 offset)
+    public bool GenerateNoiseTex(Vector3 offset, int numVoxels)
     {
         Create3DTex(ref noise, numVoxels + 3, "Noise Texure");
+        densityTypeFlags.SetData(new Vector2Int[] {Vector2Int.zero, Vector2Int.zero});
+
         noiseCompute.SetTexture(0, "DensityTexture", noise);
+        noiseCompute.SetBuffer(0, "DensityTypeFlags", densityTypeFlags);
         // Padding 1 pixel all arounnd cube texture so that vertex normals can be calculated
         noiseCompute.SetInt("textureSize", numVoxels + 3);
         noiseCompute.SetFloat("noiseScale", noiseScale);
-        noiseCompute.SetFloat("chunkScale", chunkScale);
+        noiseCompute.SetFloat("chunkScale", ((float)chunkSize / numVoxels));
         noiseCompute.SetFloat("noiseMult", noiseMultiplier);
+        noiseCompute.SetFloat("surfaceLevel", surfaceLevel);
         noiseCompute.SetVector("offset", new Vector4(offset.x, offset.y, offset.z, 0));
 
         ComputeUtils.Dispatch(noiseCompute, numVoxels + 3, numVoxels + 3, numVoxels + 3);
+
+        Vector2Int[] flags = new Vector2Int[2];
+        densityTypeFlags.GetData(flags);
+
+        return flags[0].x == 1 && flags[0].y == 1;
     }
 
     private void OnDestroy()
@@ -367,6 +438,9 @@ public class ChunkManager : MonoBehaviour
 
     void InitializeComputeBuffers()
     {
+        densityTypeFlags = new ComputeBuffer(1, sizeof(int) * 4, ComputeBufferType.Structured);
+
+        int numVoxels = lodNumVoxels[0];
         vertHashTable = new ComputeBuffer(HASH_BUFFER_SIZE, sizeof(int) * 2); // Size is power of 2
         vertexBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels / 4, sizeof(float) * 3, ComputeBufferType.Counter);
         normalsBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels / 4, sizeof(float) * 3, ComputeBufferType.Structured);

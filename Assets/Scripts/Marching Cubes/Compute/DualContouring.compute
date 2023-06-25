@@ -1,0 +1,319 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma enable_d3d11_debug_symbols
+
+#pragma kernel CreateVertices
+#pragma kernel CreateIndices
+#pragma kernel Initialize
+
+#pragma kernel CalculateNormals
+
+#include "Includes/NoiseFunc.compute"
+#include "Includes/MarchTable.compute"
+#include "Includes/HashTable.compute"
+
+struct DebugTriData
+{
+    int3 pos;
+    int3 n0;
+    int3 n1;
+    int3 n2;
+    
+    int edgeIndex;
+
+    float4 bottomCornerVals;
+    float4 topCornerVals;
+
+    int3 tri1;
+    int3 tri2;
+};
+
+RWTexture3D<float> DensityTexture;
+RWStructuredBuffer<float3> Vertices;
+RWStructuredBuffer<int> Indices;
+//AppendStructuredBuffer<DebugTriData> DebugData;
+RWStructuredBuffer<float3> Normals;
+//RWStructuredBuffer<float> NoiseBuffer;
+
+int size;
+float noiseScale;
+
+float3 offset;
+
+float surfaceLevel;
+
+float sampleDensity(int3 coord)
+{
+    //coord = max(0, min(coord, size + 2));
+    return DensityTexture[coord];
+}
+
+float3 calculateNormal(int3 coord)
+{
+    coord += 1;
+    float d = 1.0f;
+
+    float3 offsetX = float3(d, 0, 0);
+    float3 offsetY = float3(0, d, 0);
+    float3 offsetZ = float3(0, 0, d);
+
+    float dx = sampleDensity(coord + offsetX) - sampleDensity(coord - offsetX);
+    float dy = sampleDensity(coord + offsetY) - sampleDensity(coord - offsetY);
+    float dz = sampleDensity(coord + offsetZ) - sampleDensity(coord - offsetZ);
+
+    return -normalize(float3(dx, dy, dz));
+}
+
+[numthreads(8,8,8)]
+void CreateVertices (uint3 id : SV_DispatchThreadID)
+{
+    // TEMP
+    /*if (id.x >= size + 1 || id.y >= size + 1 || id.z >= size + 1)
+        return;
+    NoiseBuffer[id.x + id.y * (size + 1) + id.z * (size + 1) * (size + 1)] = DensityTexture[id];*/
+    if (id.x >= size || id.y >= size || id.z >= size)
+        return;
+    
+    float3 coord = id + offset;
+    
+    float4 cubeCorners[8] =
+    {
+        // Bottom 4 corners
+        float4(coord,                  DensityTexture[id + 1]),
+        float4(coord + uint3(0, 0, 1), DensityTexture[id + 1 + uint3(0, 0, 1)]),
+        float4(coord + uint3(1, 0, 1), DensityTexture[id + 1 + uint3(1, 0, 1)]),
+        float4(coord + uint3(1, 0, 0), DensityTexture[id + 1 + uint3(1, 0, 0)]),
+        
+        // Top 4 corners
+        float4(coord + uint3(0, 1, 0), DensityTexture[id + 1 + uint3(0, 1, 0)]),
+        float4(coord + uint3(0, 1, 1), DensityTexture[id + 1 + uint3(0, 1, 1)]),
+        float4(coord + uint3(1, 1, 1), DensityTexture[id + 1 + uint3(1, 1, 1)]),
+        float4(coord + uint3(1, 1, 0), DensityTexture[id + 1 + uint3(1, 1, 0)]),
+    };
+    
+    float3 edgePoints[12];
+    float3 edgeNormals[12];
+    int index = 0;
+    
+    float3 vertPos = 0;//id + 0.5f;
+    
+    for (int i = 0; i < 12; i++)
+    {
+        float4 a = cubeCorners[cornerIndexAFromEdge[i]];
+        float4 b = cubeCorners[cornerIndexBFromEdge[i]];
+
+        if ((a.w > surfaceLevel) != (b.w > surfaceLevel))
+        {
+            float t = (surfaceLevel - a.w) / (b.w - a.w);
+            float3 vert = a.xyz + t * (b.xyz - a.xyz);
+            edgePoints[index] = vert;
+            
+            vertPos += vert;
+            
+            //edgeNormals[index] = getNoise(noiseScale, vert).xyz;
+            index++;
+        }
+    }
+        
+    if(index > 0)
+    {
+        vertPos /= index;
+        //vertPos += SimplexNoise(vertPos) * 0.2f;
+        //vertPos = clamp(vertPos, coord, coord + 1);
+        
+        //for (int i = 0; i < 0; i++)
+        //{
+        //    float3 sum = 0;
+        //    for (int j = 0; j < index; j++)
+        //    {
+        //        float dist = dot(vertPos - edgePoints[j], edgeNormals[j]);
+        //        float3 projected = vertPos - dist * edgeNormals[j];
+                
+        //        sum += dist * edgeNormals[j];
+        //    }
+        //    vertPos -= (sum / index) * 0.7f;
+        //    //vertPos = clamp(vertPos, id, id + 1);
+        //}
+        
+        // TEMP
+        int vertIndex = Vertices.IncrementCounter();
+        
+        Vertices[vertIndex] = vertPos - offset;
+        //Normals[vertIndex] = -calculateNormal(vertPos);
+        HashInsert(id.x + id.y * size + id.z * size * size, vertIndex);
+    }
+}
+
+static const int3 edgeCubeIndices[12][3] =
+{
+    { int3(0, -1, 0),  int3(-1, 0, 0),  int3(-1, -1, 0) },
+    { int3(0, -1, 0),  int3(0, 0, 1),   int3(0, -1, 1) },
+    { int3(0, -1, 0),  int3(1, 0, 0),   int3(1, -1, 0) },
+    { int3(0, -1, 0),  int3(0, 0, -1),  int3(0, -1, -1) },
+    
+    { int3(-1, 0, 0),  int3(0, 1, 0),   int3(-1, 1, 0)},
+    { int3(0, 0, 1),   int3(0, 1, 0),   int3(0, 1, 1)},
+    { int3(1, 0, 0),   int3(0, 1, 0),   int3(1, 1, 0)},
+    { int3(0, 0, -1),  int3(0, 1, 0),   int3(0, 1, -1)},
+    
+    { int3(-1, 0, 0),  int3(0, 0, -1),  int3(-1, 0, -1)},
+    { int3(0, 0, 1),   int3(-1, 0, 0),  int3(-1, 0, 1)},
+    { int3(1, 0, 0),   int3(0, 0, 1),   int3(1, 0, 1)},
+    { int3(0, 0, -1),  int3(1, 0, 0),   int3(1, 0, -1) }
+};
+
+static const bool isLocalEdge[8][12] =
+{
+    { true, false, false, true, false, false, false, false, true, false, false, false },
+    { true, false, true, true, false, false, false, false, true, false, false, true },
+    { true, false, false, true, true, false, false, true, true, false, false, false },
+    { true, false, true, true, true, false, true, true, true, false, false, true },
+    { true, true, false, true, false, false, false, false, true, true, false, false },
+    { true, true, true, true, false, false, false, false, true, true, true, true },
+    { true, true, false, true, true, true, false, true, true, true, false, false },
+    { true, true, true, true, true, true, true, true, true, true, true, true }
+};
+
+[numthreads(8, 8, 8)]
+void CreateIndices(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size || id.y >= size || id.z >= size)
+        return;
+    
+    uint check = 0;
+    if (id.x == size - 1)
+        check |= 1;
+    if (id.y == size - 1)
+        check |= 2;
+    if (id.z == size - 1)
+        check |= 4;
+    
+    float4 cubeCorners[8] =
+    {
+        // Bottom 4 corners
+        float4(id.xyz,                  DensityTexture[id + 2]),
+        float4(id.xyz + uint3(0, 0, 1), DensityTexture[id + 2 + uint3(0, 0, 1)]),
+        float4(id.xyz + uint3(1, 0, 1), DensityTexture[id + 2 + uint3(1, 0, 1)]),
+        float4(id.xyz + uint3(1, 0, 0), DensityTexture[id + 2 + uint3(1, 0, 0)]),
+        
+        // Top 4 corners
+        float4(id.xyz + uint3(0, 1, 0), DensityTexture[id + 2 + uint3(0, 1, 0)]),
+        float4(id.xyz + uint3(0, 1, 1), DensityTexture[id + 2 + uint3(0, 1, 1)]),
+        float4(id.xyz + uint3(1, 1, 1), DensityTexture[id + 2 + uint3(1, 1, 1)]),
+        float4(id.xyz + uint3(1, 1, 0), DensityTexture[id + 2 + uint3(1, 1, 0)]),
+    };
+    
+    float3 voxelBL = id + 1;
+    int curCubeIndex = HashLookup((voxelBL.x) + (voxelBL.y) * (size + 2) + (voxelBL.z) * (size + 2) * (size + 2));
+    
+    for (int i = 0; i < 12; i++)
+    {
+        if (!isLocalEdge[0][i]) continue;
+
+        if ((cubeCorners[cornerIndexAFromEdge[i]].w > surfaceLevel)  !=
+           (cubeCorners[cornerIndexBFromEdge[i]].w > surfaceLevel))
+        {
+            bool flip = cubeCorners[cornerIndexAFromEdge[i]].w > surfaceLevel;
+
+            int3 neighbourVoxels[3] = edgeCubeIndices[i];
+            int neighbourIndices[3] = { 0, 0, 0 };
+            for(int j = 0; j < 3; j++)
+            {
+                uint3 v = neighbourVoxels[j] + voxelBL;
+                neighbourIndices[j] = HashLookup(v.x + v.y * (size + 2) + v.z * (size + 2) * (size + 2));
+            }
+            
+            int index = Indices.IncrementCounter() * 6;
+            
+            if (flip)
+            {
+                Indices[index] = curCubeIndex;
+                Indices[index + 1] = neighbourIndices[1];
+                Indices[index + 2] = neighbourIndices[0];
+                Indices[index + 3] = neighbourIndices[1];
+                Indices[index + 4] = neighbourIndices[2];
+                Indices[index + 5] = neighbourIndices[0];
+            }
+            else
+            {
+                Indices[index] = curCubeIndex;
+                Indices[index + 1] = neighbourIndices[0];
+                Indices[index + 2] = neighbourIndices[1];
+                Indices[index + 3] = neighbourIndices[0];
+                Indices[index + 4] = neighbourIndices[2];
+                Indices[index + 5] = neighbourIndices[1];
+            }
+        }
+    }
+}
+
+float3 calculateNormal2(int3 id, float3 vertexPos)
+{
+    float3 normal = 0;
+    int numNeighbours = 0;
+    
+    int3 neighbours[8] =
+    {
+        int3(1, 0, 1), int3(1, 0, 0), int3(1, 0, -1),
+        int3(0, 0, -1), int3(-1, 0, -1),
+        int3(-1, 0, 0), int3(-1, 0, 1), int3(0, 0, 1),
+    };
+    
+    float3 prevNeighbour = -1;
+
+    for (int y = 1; y >= -1; y--)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            int3 neighbourPos = neighbours[i] + id + int3(0, y, 0);
+            if (neighbourPos.x < 0 || neighbourPos.y < 0 || neighbourPos.z < 0 ||
+            neighbourPos.x >= size || neighbourPos.y >= size || neighbourPos.z >= size)
+            {
+                continue;
+            }
+        
+            int neighbourID = neighbourPos.x + neighbourPos.y * size + neighbourPos.z * size * size;
+            int vertIndex = HashLookup(neighbourID);
+        
+            if (vertIndex != EMPTY)
+            {
+                numNeighbours++;
+                float3 neighbourVert = Vertices[vertIndex];
+                if (prevNeighbour.x != -1)
+                {
+                    normal += cross(prevNeighbour - vertexPos, neighbourVert - vertexPos);
+                }
+            
+                prevNeighbour = neighbourVert;
+            }
+        }
+        prevNeighbour = -1;
+    }
+    
+    return normal / numNeighbours;
+}
+
+[numthreads(8, 8, 8)]
+void CalculateNormals(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= size || id.y >= size || id.z >= size)
+        return;
+    
+    int vertID = HashLookup(id.x + id.y * size + id.z * size * size);
+    if(vertID == EMPTY)
+        return;
+    
+    float3 vert = Vertices[vertID];
+    float3 normal;
+    
+    if(id.x == 0 || id.y == 0 || id.z == 0 ||
+      id.x == size - 2 || id.y == size - 2 || id.z == size - 2)
+    {
+        normal = calculateNormal(vert);
+    }
+    else
+    {
+        normal = calculateNormal2(id, vert);
+    }
+    
+    Normals[vertID] = normal;
+}

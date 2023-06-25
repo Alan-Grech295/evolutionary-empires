@@ -33,7 +33,7 @@
 #include "Common.compute"
 
 float4 SimplexNoiseGrad(float3 v)
-{
+{    
     // First corner
     float3 i = floor(v + dot(v, 1.0 / 3));
     float3 x0 = v - i + dot(i, 1.0 / 6);

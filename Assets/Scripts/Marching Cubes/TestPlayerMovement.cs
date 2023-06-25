@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -13,10 +14,17 @@ public class TestPlayerMovement : MonoBehaviour
     private Vector2 mouseDelta;
 
     private float xRot, yRot;
+    private Rigidbody rb;
+    private Camera camera;
+
+    Vector3 movement = new Vector3();
 
     private void Awake()
     {
         input = new DebugInputs();
+        rb = GetComponent<Rigidbody>();
+        camera = GetComponentInChildren<Camera>();
+        CharacterController controller = GetComponentInChildren<CharacterController>();
     }
 
     private void OnEnable()
@@ -44,8 +52,14 @@ public class TestPlayerMovement : MonoBehaviour
         xRot -= mouseDelta.y * Time.deltaTime;
         xRot = Mathf.Clamp(xRot, -70, 70);
         yRot += mouseDelta.x * Time.deltaTime;
-        transform.localEulerAngles = new Vector3(xRot, yRot, 0);
-        transform.position += (transform.forward * forward + transform.right * side + transform.up * up) * Time.deltaTime;
+        transform.localEulerAngles = new Vector3(0, yRot, 0);
+        camera.transform.localEulerAngles = new Vector3(xRot, 0, 0);
+        bool isJumping = input.Player.Jump.triggered;
+        rb.position += (transform.forward * forward + transform.right * side) * Time.deltaTime;
+        if(isJumping)
+        {
+            rb.velocity += Vector3.up * 10;
+        }
     }
 
     private void OnMovePerformed(InputAction.CallbackContext value)
