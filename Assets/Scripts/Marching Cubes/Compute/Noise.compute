@@ -28,13 +28,17 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     noiseMask *= noiseMask * 20;
     density += fbm(6, 2, 0.5f, noiseScale, pos) * noiseMult + noiseMask;*/
     
-    if (density > surfaceLevel)
+    if (id.x > 1 && id.y > 1 && id.z > 1 && 
+        id.x <= textureSize - 2 && id.y <= textureSize - 2 && id.z <= textureSize - 2)
     {
-        DensityTypeFlags[0].x = 1;
-    }
-    else
-    {
-        DensityTypeFlags[0].y = 1;
+        if (density > surfaceLevel)
+        {
+            DensityTypeFlags[0].x = 1;
+        }
+        else
+        {
+            DensityTypeFlags[0].y = 1;
+        }
     }
     
     DensityTexture[id] = density; //(pos.y / textureSize) - 0.5f + (SimplexNoise(pos * noiseScale) * 0.2f);

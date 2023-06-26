@@ -1,8 +1,8 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
+using TreeEditor;
 using Unity.Collections;
 using Unity.Mathematics;
 using Unity.VisualScripting;
@@ -11,253 +11,187 @@ using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using static UnityEditor.PlayerSettings;
 
-public class DualContourTest : MonoBehaviour
+public static class Perlin
 {
-    public int size = 16;
-    public float noiseScale = 1.0f;
-    public float surfaceLevel = 0;
-    public ComputeShader shader;
-    public ComputeShader noiseCompute;
+    #region Noise functions
 
-    [Header("Debug")]
-    public bool showNormals;
-
-    [Header("Debug tests")]
-    public bool generateWithNormals;
-
-    private Vector3[] verts;
-    private int[] indices;
-
-    RenderTexture noiseTexture;
-
-    Mesh mesh;
-    int offset = 0;
-
-    static bool[][] isLocalEdge = new bool[8][]
+    public static float Noise(float x)
     {
-        new bool[12]{ true,     false, false,  true,  false,  false,  false,  false,  true,  false,  false,  false },
-        new bool[12]{ true,     false, true,   true,  false,  false,  false,  false,  true,  false,  false,  true },
-        new bool[12]{ true,     false, false,  true,  true,   false,  false,  true,   true,  false,  false,  false },
-        new bool[12]{ true,     false, true,   true,  true,   false,  true,   true,   true,  false,  false,  true },
-        new bool[12]{ true,     true,  false,  true,  false,  false,  false,  false,  true,  true,   false,  false },
-        new bool[12]{ true,     true,  true,   true,  false,  false,  false,  false,  true,  true,   true,   true },
-        new bool[12]{ true,     true,  false,  true,  true,   true,   false,  true,   true,  true,   false,  false },
-        new bool[12]{ true,     true,  true,   true,  true,   true,   true,   true,   true,  true,   true,   true }
-    };
-
-    static int[] cornerIndexAFromEdge = new int[12]{ 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3 };
-    static int[] cornerIndexBFromEdge = new int[12]{ 1, 2, 3, 0, 5, 6, 7, 4, 4, 5, 6, 7 };
-
-    private List<Vector3> triangles = new List<Vector3>();
-    private List<Tuple<int, int>> edgeIndices = new List<Tuple<int, int>>();
-
-    float[] noise;
-
-    [Serializable]
-    public struct DebugTriData
-    {
-        public Vector3Int pos;
-        public Vector3Int n0;
-        public Vector3Int n1;
-        public Vector3Int n2;
-
-        public int edgeIndex;
-         
-        public Vector4 bottomCornerVals;
-        public Vector4 topCornerVals;
-         
-        public Vector3Int tri1;
-        public Vector3Int tri2;
+        var X = Mathf.FloorToInt(x) & 0xff;
+        x -= Mathf.Floor(x);
+        var u = Fade(x);
+        return Lerp(u, Grad(perm[X], x), Grad(perm[X + 1], x - 1)) * 2;
     }
 
+    public static float Noise(float x, float y)
+    {
+        var X = Mathf.FloorToInt(x) & 0xff;
+        var Y = Mathf.FloorToInt(y) & 0xff;
+        x -= Mathf.Floor(x);
+        y -= Mathf.Floor(y);
+        var u = Fade(x);
+        var v = Fade(y);
+        var A = (perm[X] + Y) & 0xff;
+        var B = (perm[X + 1] + Y) & 0xff;
+        return Lerp(v, Lerp(u, Grad(perm[A], x, y), Grad(perm[B], x - 1, y)),
+                       Lerp(u, Grad(perm[A + 1], x, y - 1), Grad(perm[B + 1], x - 1, y - 1)));
+    }
+
+    public static float Noise(Vector2 coord)
+    {
+        return Noise(coord.x, coord.y);
+    }
+
+    public static float Noise(float x, float y, float z)
+    {
+        var X = Mathf.FloorToInt(x) & 0xff;
+        var Y = Mathf.FloorToInt(y) & 0xff;
+        var Z = Mathf.FloorToInt(z) & 0xff;
+        x -= Mathf.Floor(x);
+        y -= Mathf.Floor(y);
+        z -= Mathf.Floor(z);
+        var u = Fade(x);
+        var v = Fade(y);
+        var w = Fade(z);
+        var A = (perm[X] + Y) & 0xff;
+        var B = (perm[X + 1] + Y) & 0xff;
+        var AA = (perm[A] + Z) & 0xff;
+        var BA = (perm[B] + Z) & 0xff;
+        var AB = (perm[A + 1] + Z) & 0xff;
+        var BB = (perm[B + 1] + Z) & 0xff;
+        return Lerp(w, Lerp(v, Lerp(u, Grad(perm[AA], x, y, z), Grad(perm[BA], x - 1, y, z)),
+                               Lerp(u, Grad(perm[AB], x, y - 1, z), Grad(perm[BB], x - 1, y - 1, z))),
+                       Lerp(v, Lerp(u, Grad(perm[AA + 1], x, y, z - 1), Grad(perm[BA + 1], x - 1, y, z - 1)),
+                               Lerp(u, Grad(perm[AB + 1], x, y - 1, z - 1), Grad(perm[BB + 1], x - 1, y - 1, z - 1))));
+    }
+
+    public static float Noise(Vector3 coord)
+    {
+        return Noise(coord.x, coord.y, coord.z);
+    }
+
+    #endregion
+
+    #region fBm functions
+
+    public static float Fbm(float x, int octave)
+    {
+        var f = 0.0f;
+        var w = 0.5f;
+        for (var i = 0; i < octave; i++)
+        {
+            f += w * Noise(x);
+            x *= 2.0f;
+            w *= 0.5f;
+        }
+        return f;
+    }
+
+    public static float Fbm(Vector2 coord, int octave)
+    {
+        var f = 0.0f;
+        var w = 0.5f;
+        for (var i = 0; i < octave; i++)
+        {
+            f += w * Noise(coord);
+            coord *= 2.0f;
+            w *= 0.5f;
+        }
+        return f;
+    }
+
+    public static float Fbm(float x, float y, int octave)
+    {
+        return Fbm(new Vector2(x, y), octave);
+    }
+
+    public static float Fbm(Vector3 coord, int octave)
+    {
+        var f = 0.0f;
+        var w = 0.5f;
+        for (var i = 0; i < octave; i++)
+        {
+            f += w * Noise(coord);
+            coord *= 2.0f;
+            w *= 0.5f;
+        }
+        return f;
+    }
+
+    public static float Fbm(float x, float y, float z, int octave)
+    {
+        return Fbm(new Vector3(x, y, z), octave);
+    }
+
+    #endregion
+
+    #region Private functions
+
+    static float Fade(float t)
+    {
+        return t * t * t * (t * (t * 6 - 15) + 10);
+    }
+
+    static float Lerp(float t, float a, float b)
+    {
+        return a + t * (b - a);
+    }
+
+    static float Grad(int hash, float x)
+    {
+        return (hash & 1) == 0 ? x : -x;
+    }
+
+    static float Grad(int hash, float x, float y)
+    {
+        return ((hash & 1) == 0 ? x : -x) + ((hash & 2) == 0 ? y : -y);
+    }
+
+    static float Grad(int hash, float x, float y, float z)
+    {
+        var h = hash & 15;
+        var u = h < 8 ? x : y;
+        var v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+        return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
+    }
+
+    static int[] perm = {
+        151,160,137,91,90,15,
+        131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,
+        190, 6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,
+        88,237,149,56,87,174,20,125,136,171,168, 68,175,74,165,71,134,139,48,27,166,
+        77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,
+        102,143,54, 65,25,63,161, 1,216,80,73,209,76,132,187,208, 89,18,169,200,196,
+        135,130,116,188,159,86,164,100,109,198,173,186, 3,64,52,217,226,250,124,123,
+        5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,
+        223,183,170,213,119,248,152, 2,44,154,163, 70,221,153,101,155,167, 43,172,9,
+        129,22,39,253, 19,98,108,110,79,113,224,232,178,185, 112,104,218,246,97,228,
+        251,34,242,193,238,210,144,12,191,179,162,241, 81,51,145,235,249,14,239,107,
+        49,192,214, 31,181,199,106,157,184, 84,204,176,115,121,50,45,127, 4,150,254,
+        138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180,
+        151
+    };
+
+    #endregion
+}
+
+public class DualContourTest : MonoBehaviour
+{
+    public int size;
+    public float scale = 1.0f;
+    public float mult = 1.0f;
+    public Texture3D noise;
 
     public void Run()
     {
-        Stopwatch sw = new Stopwatch();
-        Stopwatch individualSW = new Stopwatch();
-        sw.Start();
-        individualSW.Start();
-        triangles = new List<Vector3>();
-        edgeIndices = new List<Tuple<int, int>>();
-        int actualSize = size + 2;
+        Texture3DEmulator noiseTexture = new Texture3DEmulator(size + 4, size + 4, size + 4);
+        GPUEmulator.BindTexture("noise", ref noiseTexture);
 
-        GenerateNoiseTex(transform.position, actualSize);
-        UnityEngine.Debug.Log($"Generated noise in {individualSW.Elapsed.TotalMilliseconds}ms");
-        individualSW.Restart();
-
-        int HASH_BUFFER_SIZE = size * size * size;
-        // Calculates the nearest power of 2
-        HASH_BUFFER_SIZE--;
-        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 1;
-        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 2;
-        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 4;
-        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 8;
-        HASH_BUFFER_SIZE |= HASH_BUFFER_SIZE >> 16;
-        HASH_BUFFER_SIZE++;
-
-        int THREAD_BLOCKS = HASH_BUFFER_SIZE / 64;
-
-        int k_CreateVertices = shader.FindKernel("CreateVertices");
-        int k_CreateIndices = shader.FindKernel("CreateIndices");
-        int k_HashInit = shader.FindKernel("Initialize");
-        int k_CalculateNormals = shader.FindKernel("CalculateNormals");
-
-        ComputeBuffer vertHashTable = new ComputeBuffer(HASH_BUFFER_SIZE, sizeof(int) * 2);
-
-        shader.SetBuffer(k_HashInit, "b_hash", vertHashTable);
-        shader.SetInt("e_hashBufferSize", HASH_BUFFER_SIZE);
-
-        // Sets the hash table to empty values
-        shader.Dispatch(k_HashInit, THREAD_BLOCKS, 1, 1);
-        UnityEngine.Debug.Log($"Cleared hash table in {individualSW.Elapsed.TotalMilliseconds}ms");
-        individualSW.Restart();
-
-        ComputeBuffer vertexBuffer = new ComputeBuffer(actualSize * actualSize * actualSize, sizeof(float) * 3, ComputeBufferType.Counter);
-        vertexBuffer.SetCounterValue(0);
-        ComputeBuffer indexBuffer = new ComputeBuffer(size * size * size * 6, sizeof(int), ComputeBufferType.Counter);
-        indexBuffer.SetCounterValue(0);
-        /*ComputeBuffer debugBuffer = new ComputeBuffer(size * size * size * 6, ComputeUtils.GetStride<DebugTriData>(), ComputeBufferType.Counter);
-        debugBuffer.SetCounterValue(0);*/
-        ComputeBuffer normalsBuffer = new ComputeBuffer(actualSize * actualSize * actualSize, sizeof(float) * 3, ComputeBufferType.Structured);
-
-        shader.SetTexture(k_CreateVertices, "DensityTexture", noiseTexture);
-        shader.SetBuffer(k_CreateVertices, "Vertices", vertexBuffer);
-        shader.SetBuffer(k_CreateVertices, "Indices", indexBuffer);
-        shader.SetBuffer(k_CreateVertices, "Normals", normalsBuffer);
-
-        shader.SetVector("offset", new Vector4(transform.position.x, transform.position.y, transform.position.z, 0));
-
-        shader.SetInt("size", actualSize);
-        shader.SetFloat("noiseScale", noiseScale);
-        shader.SetFloat("surfaceLevel", surfaceLevel);
-
-        shader.SetBuffer(k_CreateVertices, "b_hash", vertHashTable);
-
-        ComputeUtils.Dispatch(shader, actualSize, actualSize, actualSize, k_CreateVertices);
-
-        shader.SetTexture(k_CalculateNormals, "DensityTexture", noiseTexture);
-        shader.SetBuffer(k_CalculateNormals, "Vertices", vertexBuffer);
-        shader.SetBuffer(k_CalculateNormals, "Normals", normalsBuffer);
-        shader.SetBuffer(k_CalculateNormals, "b_hash", vertHashTable);
-
-        ComputeUtils.Dispatch(shader, actualSize, actualSize, actualSize, k_CalculateNormals);
-
-        UnityEngine.Debug.Log($"Created vertices in {individualSW.Elapsed.TotalMilliseconds}ms");
-        individualSW.Restart();
-
-        shader.SetInt("size", size);
-        shader.SetTexture(k_CreateIndices, "DensityTexture", noiseTexture);
-        shader.SetBuffer(k_CreateIndices, "Vertices", vertexBuffer);
-        shader.SetBuffer(k_CreateIndices, "Indices", indexBuffer);
-        shader.SetBuffer(k_CreateIndices, "b_hash", vertHashTable);
-
-        ComputeUtils.Dispatch(shader, size, size, size, k_CreateIndices);
-
-        UnityEngine.Debug.Log($"Created indices in {individualSW.Elapsed.TotalMilliseconds}ms");
-        individualSW.Restart();
-
-        ComputeBuffer countBuffer = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Raw);
-
-        int numVerts;
-
-        (verts, numVerts) = ComputeUtils.ReadData<Vector3>(vertexBuffer, countBuffer);
-
-        Vector3[] normals = new Vector3[numVerts];
-        normalsBuffer.GetData(normals);
-
-        (indices, _) = ComputeUtils.ReadData<int>(indexBuffer, countBuffer, 6);
-
-        vertexBuffer.Release();
-        normalsBuffer.Release();
-        countBuffer.Release();
-        indexBuffer.Release();
-
-        mesh = new Mesh();
-        mesh.indexFormat = IndexFormat.UInt32;
-
-        UnityEngine.Debug.Log($"Copied data in {individualSW.Elapsed.TotalMilliseconds}ms");
-        individualSW.Restart();
-
-        mesh.SetVertices(verts);
-        mesh.SetTriangles(indices, 0);
-        if(generateWithNormals)
-            mesh.SetNormals(normals);
-        else
-            mesh.RecalculateNormals();
-
-        sw.Stop();
-        UnityEngine.Debug.Log($"Generated mesh in {individualSW.Elapsed.TotalMilliseconds}, total: {sw.Elapsed.TotalMilliseconds}ms");
-
-        GetComponent<MeshFilter>().sharedMesh = mesh;
-    }
-
-    public bool GenerateNoiseTex(Vector3 offset, int numVoxels)
-    {
-        numVoxels += 2;
-
-        ComputeBuffer densityTypeFlags = new ComputeBuffer(1, sizeof(int) * 4, ComputeBufferType.Structured);
-
-        Create3DTex(ref noiseTexture, numVoxels, "Noise Texure");
-        densityTypeFlags.SetData(new Vector2Int[] { Vector2Int.zero, Vector2Int.zero });
-
-        noiseCompute.SetTexture(0, "DensityTexture", noiseTexture);
-        noiseCompute.SetBuffer(0, "DensityTypeFlags", densityTypeFlags);
-        // Padding 1 pixel all arounnd cube texture so that vertex normals can be calculated
-        noiseCompute.SetInt("textureSize", numVoxels);
-        noiseCompute.SetFloat("noiseScale", noiseScale);
-        noiseCompute.SetFloat("chunkScale", 1);
-        noiseCompute.SetFloat("noiseMult", 1);
-        noiseCompute.SetFloat("surfaceLevel", surfaceLevel);
-        noiseCompute.SetVector("offset", new Vector4(offset.x, offset.y, offset.z, 0));
-
-        ComputeUtils.Dispatch(noiseCompute, numVoxels, numVoxels, numVoxels);
-
-        Vector2Int[] flags = new Vector2Int[2];
-        densityTypeFlags.GetData(flags);
-
-        return flags[0].x == 1 && flags[0].y == 1;
-    }
-
-    // Taken from Sebastian Lague https://github.com/SebLague/Terraforming/blob/main/Assets/Marching%20Cubes/Scripts/GenTest.cs#L315
-    void Create3DTex(ref RenderTexture texture, int size, string name)
-    {
-        var format = UnityEngine.Experimental.Rendering.GraphicsFormat.R32_SFloat;
-        if (texture == null || !texture.IsCreated() || texture.width != size || texture.height != size || texture.volumeDepth != size || texture.graphicsFormat != format)
+        GPUEmulator.Dispatch(size + 4, size + 4, size + 4, id =>
         {
-            if (texture != null)
-            {
-                texture.Release();
-            }
+            GPUEmulator.Texture("noise")[id] = Mathf.Pow((Perlin.Fbm(new Vector3(id.x, id.y, id.z) * scale, 5) + 1f) / 2f, mult);
+        });
 
-            const int numBitsInDepthBuffer = 0;
-            texture = new RenderTexture(size, size, numBitsInDepthBuffer);
-            texture.graphicsFormat = format;
-            texture.volumeDepth = size;
-            texture.enableRandomWrite = true;
-            texture.dimension = TextureDimension.Tex3D;
-
-            texture.Create();
-        }
-
-        texture.wrapMode = TextureWrapMode.Repeat;
-        texture.filterMode = FilterMode.Bilinear;
-        texture.name = name;
-    }
-
-    private void OnDrawGizmos()
-    {
-        Gizmos.color = Color.green;
-        if (showNormals && mesh != null)
-        {
-            for(int i = offset; i <  mesh.vertices.Length; i += 8)
-            {
-                Vector3 vert = mesh.vertices[i];
-                if (vert.x < 0) continue;
-                Vector3 normal = mesh.normals[i];
-
-                Gizmos.DrawLine(transform.position + vert, transform.position + vert + normal);
-            }
-            offset = (offset + 1) % 8;
-        }
+        noise = noiseTexture.Get();
     }
 }

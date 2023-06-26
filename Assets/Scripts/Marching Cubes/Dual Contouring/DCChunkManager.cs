@@ -13,6 +13,7 @@ public class DCChunkManager : MonoBehaviour
 {
     //public int numVoxels = 32;
     public int[] lodNumVoxels;
+    public AnimationCurve lodCurve;
     public int chunkSize = 32;
     public int batchCubeSize = 3;
     public float noiseScale = 0.1f;
@@ -176,9 +177,10 @@ public class DCChunkManager : MonoBehaviour
             visibleChunks[1 - currentVisibleChunkBuffer].Remove(chunkPos);
 
             Vector3 chunkDist = (chunkPos - playerTransform.position) / chunkSize;
-            float maxDist = Mathf.Clamp01(Mathf.Max(Mathf.Abs(chunkDist.x / chunkLoadDistance.x),
-                                      Mathf.Abs(chunkDist.y / chunkLoadDistance.y), 
-                                      Mathf.Abs(chunkDist.z / chunkLoadDistance.z)));
+            float maxDist = Mathf.Clamp01(lodCurve.Evaluate(
+                                        Mathf.Max(Mathf.Abs(chunkDist.x / chunkLoadDistance.x),
+                                        Mathf.Abs(chunkDist.y / chunkLoadDistance.y),
+                                        Mathf.Abs(chunkDist.z / chunkLoadDistance.z))));
 
             int lod = Mathf.FloorToInt(maxDist * (lodNumVoxels.Length - 1));
             int numVoxels = lodNumVoxels[lod];
@@ -382,7 +384,6 @@ public class DCChunkManager : MonoBehaviour
     {
         numVoxels += 2;
 
-        Create3DTex(ref noise, numVoxels, "Noise Texure");
         densityTypeFlags.SetData(new Vector2Int[] {Vector2Int.zero, Vector2Int.zero});
 
         noiseCompute.SetTexture(0, "DensityTexture", noise);
@@ -440,9 +441,11 @@ public class DCChunkManager : MonoBehaviour
 
     void InitializeComputeBuffers()
     {
+        int numVoxels = lodNumVoxels[0];
+        Create3DTex(ref noise, numVoxels + 4, "Noise Texure");
+
         densityTypeFlags = new ComputeBuffer(1, sizeof(int) * 4, ComputeBufferType.Structured);
 
-        int numVoxels = lodNumVoxels[0];
         vertHashTable = new ComputeBuffer(HASH_BUFFER_SIZE, sizeof(int) * 2); // Size is power of 2
         vertexBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels / 4, sizeof(float) * 3, ComputeBufferType.Counter);
         normalsBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels / 4, sizeof(float) * 3, ComputeBufferType.Structured);

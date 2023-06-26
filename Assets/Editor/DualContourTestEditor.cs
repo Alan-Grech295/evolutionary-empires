@@ -11,7 +11,7 @@ public class DualContourTestEditor : Editor
         base.OnInspectorGUI();
 
         DualContourTest dualContourTest = (DualContourTest)target;
-        if (GUILayout.Button("Generate"))
+        if(GUILayout.Button("Run"))
         {
             dualContourTest.Run();
         }
