@@ -91,7 +91,7 @@ void CreateVertices (uint3 id : SV_DispatchThreadID)
     };
     
     float3 edgePoints[12];
-    float3 edgeNormals[12];
+    //float3 edgeNormals[12];
     int index = 0;
     
     float3 vertPos = 0;//id + 0.5f;
@@ -117,24 +117,6 @@ void CreateVertices (uint3 id : SV_DispatchThreadID)
     if(index > 0)
     {
         vertPos /= index;
-        //vertPos += SimplexNoise(vertPos) * 0.2f;
-        //vertPos = clamp(vertPos, coord, coord + 1);
-        
-        //for (int i = 0; i < 0; i++)
-        //{
-        //    float3 sum = 0;
-        //    for (int j = 0; j < index; j++)
-        //    {
-        //        float dist = dot(vertPos - edgePoints[j], edgeNormals[j]);
-        //        float3 projected = vertPos - dist * edgeNormals[j];
-                
-        //        sum += dist * edgeNormals[j];
-        //    }
-        //    vertPos -= (sum / index) * 0.7f;
-        //    //vertPos = clamp(vertPos, id, id + 1);
-        //}
-        
-        // TEMP
         int vertIndex = Vertices.IncrementCounter();
         
         Vertices[vertIndex] = vertPos - offset;

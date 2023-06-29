@@ -1,12 +1,19 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Runtime.Serialization.Formatters.Binary;
+using System.Runtime.Serialization;
 using Unity.Mathematics;
 using Unity.VisualScripting;
 using UnityEngine;
 
 
+public interface IComputeEmulator
+{
+    public void Main(int3 id);
+}
 
 public static class GPUEmulator
 {
@@ -33,16 +40,16 @@ public static class GPUEmulator
         return boundTextures[name];
     }
 
-    public static void Dispatch(int x, int y, int z, Action<Vector3Int> function)
+    public static void Dispatch(int x, int y, int z, IComputeEmulator computeShader)
     {
-        List<Vector3Int> ids = new List<Vector3Int>(x * y * z);
+        List<int3> ids = new List<int3>(x * y * z);
         for(int zThread = 0; zThread < z; zThread++)
         {
             for (int yThread = 0; yThread < y; yThread++)
             {
                 for (int xThread = 0; xThread < x; xThread++)
                 {
-                    ids.Add(new Vector3Int(xThread, yThread, zThread));
+                    ids.Add(new int3(xThread, yThread, zThread));
                 }
             }
         }
@@ -52,7 +59,7 @@ public static class GPUEmulator
         while(ids.Count > 0)
         {
             int i = rand.Next(0, ids.Count);
-            function.Invoke(ids[i]);
+            computeShader.Main(ids[i]);
             ids.RemoveAt(i);
         }
     }
@@ -62,6 +69,18 @@ public class BufferEmulator
 {
     object[] buffer;
     int counter = 0;
+
+    static object DeepCopy<T>(T other)
+    {
+        using (MemoryStream ms = new MemoryStream())
+        {
+            BinaryFormatter formatter = new BinaryFormatter();
+            formatter.Context = new StreamingContext(StreamingContextStates.Clone);
+            formatter.Serialize(ms, other);
+            ms.Position = 0;
+            return formatter.Deserialize(ms);
+        }
+    }
 
     public object this[int index]
     {
@@ -82,7 +101,14 @@ public class BufferEmulator
 
     public int IncrementCounter()
     {
-        return ++counter;
+        int temp = counter;
+        counter++;
+        return temp;
+    }
+
+    public void SetCounter(int counter)
+    {
+        this.counter = counter;
     }
 
     public void Append<T>(T element)
@@ -98,7 +124,7 @@ public class BufferEmulator
 
         for(int i = 0; i < array.Length; i++)
         {
-            array[i] = (T)buffer[i];
+            array[i] = unchecked((T)buffer[i]);
         }
     }
 
@@ -124,7 +150,7 @@ public class Texture3DEmulator
         set { buffer[x + y * width + z * width * height] = value; }
     }
 
-    public float this[Vector3Int id]
+    public float this[int3 id]
     {
         get { return this[id.x, id.y, id.z]; }
         set { this[id.x, id.y, id.z] = value; }

@@ -1,15 +1,19 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
 using TreeEditor;
 using Unity.Collections;
 using Unity.Mathematics;
 using Unity.VisualScripting;
+using UnityEditor.Rendering;
+using UnityEditor.ShaderGraph.Internal;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UIElements;
 using static UnityEditor.PlayerSettings;
+using static UnityEditor.Searcher.SearcherWindow.Alignment;
 
 public static class Perlin
 {
@@ -175,23 +179,304 @@ public static class Perlin
     #endregion
 }
 
+public class Noise : IComputeEmulator
+{
+    public float scale;
+    public float mult;
+    public float add;
+    public void Main(int3 id)
+    {
+        GPUEmulator.Texture("noise")[id] = -id.y * mult + add + Mathf.Pow((Perlin.Fbm(new Vector3(id.x, id.y, id.z) * scale, 5) + 1f) / 2f, 4f);
+    }
+}
+
+public class CollapseOctree : IComputeEmulator
+{
+    public int scale;
+    public int size;
+    public float surfaceLevel;
+    public void Main(int3 id)
+    {
+        int3 coord = id * scale;
+        bool belowSurface = GPUEmulator.Texture("noise")[coord + 1] < surfaceLevel;
+        for (int z = 0; z <= scale; z += scale / 2)
+        {
+            for (int y = 0; y <= scale; y += scale / 2)
+            {
+                for (int x = 0; x <= scale; x += scale / 2)
+                {
+                    int3 neighbourCoord = coord + new int3(x, y, z);
+                    int index = neighbourCoord.x + (neighbourCoord.y + (neighbourCoord.z * size)) * size;
+                    if (x < scale && y < scale && z < scale && ((float4)GPUEmulator.Buffer("Octree")[index]).w != scale / 2)
+                        return;
+
+                    float density = GPUEmulator.Texture("noise")[neighbourCoord + 1];
+                    if ((density < surfaceLevel) != belowSurface)
+                        return;
+                }
+            }
+        }
+
+        for (int z = 0; z < scale; z += scale / 2)
+        {
+            for (int y = 0; y < scale; y += scale / 2)
+            {
+                for (int x = 0; x < scale; x += scale / 2)
+                {
+                    if (x == 0 && y == 0 && z == 0)
+                        continue;
+
+                    int3 neighbourCoord = coord + new int3(x, y, z);
+                    int index = neighbourCoord.x + (neighbourCoord.y + (neighbourCoord.z * size)) * size;
+                    GPUEmulator.Buffer("Octree")[index] = new float4(0);
+                }
+            }
+        }
+
+        int octreeIndex = coord.x + (coord.y + (coord.z * size)) * size;
+        GPUEmulator.Buffer("Octree")[octreeIndex] = new float4(coord.xyz, scale);
+    }
+}
+
+public class CreateVertices : IComputeEmulator
+{
+    public int size;
+    public float surfaceLevel;
+
+    static int[] cornerIndexAFromEdge = new int[12]{ 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3 };
+    static int[] cornerIndexBFromEdge = new int[12]{ 1, 2, 3, 0, 5, 6, 7, 4, 4, 5, 6, 7 };
+
+    static int3 int3One = new int3(1, 1, 1);
+
+    public Dictionary<int, int> vertHash = new Dictionary<int, int>();
+
+    public void Main(int3 id)
+    {
+        if (id.x >= size || id.y >= size || id.z >= size)
+            return;
+
+        int3 coord = id;
+
+        Texture3DEmulator DensityTexture = GPUEmulator.Texture("noise");
+
+        float4[] cubeCorners = new float4[8]
+        {
+            // Bottom 4 corners
+            new float4(coord.x, coord.y, coord.z,          DensityTexture[id + int3One]),
+            new float4(coord.x, coord.y, coord.z + 1,      DensityTexture[id + int3One + new int3(0, 0, 1)]),
+            new float4(coord.x + 1, coord.y, coord.z + 1,  DensityTexture[id + int3One + new int3(1, 0, 1)]),
+            new float4(coord.x + 1, coord.y, coord.z,      DensityTexture[id + int3One + new int3(1, 0, 0)]),
+        
+            // Top 4 corners
+            new float4(coord.x, coord.y + 1, coord.z,          DensityTexture[id + int3One + new int3(0, 1, 0)]),
+            new float4(coord.x, coord.y + 1, coord.z + 1,      DensityTexture[id + int3One + new int3(0, 1, 1)]),
+            new float4(coord.x + 1, coord.y + 1, coord.z + 1,  DensityTexture[id + int3One + new int3(1, 1, 1)]),
+            new float4(coord.x + 1, coord.y + 1, coord.z,      DensityTexture[id + int3One + new int3(1, 1, 0)]),
+        };
+
+        float3[] edgePoints = new float3[12];
+        int index = 0;
+
+        float3 vertPos = float3.zero;
+
+        for (int i = 0; i < 12; i++)
+        {
+            float4 a = cubeCorners[cornerIndexAFromEdge[i]];
+            float4 b = cubeCorners[cornerIndexBFromEdge[i]];
+
+            if ((a.w > surfaceLevel) != (b.w > surfaceLevel))
+            {
+                float t = (surfaceLevel - a.w) / (b.w - a.w);
+                float3 vert = a.xyz + t * (b.xyz - a.xyz);
+                edgePoints[index] = vert;
+
+                vertPos += vert;
+                index++;
+            }
+        }
+
+        if (index > 0)
+        {
+            vertPos /= index;
+            int vertIndex = GPUEmulator.Buffer("Vertices").IncrementCounter();
+
+            uint mortonCode = 0;
+            float step = size / 2f;
+            float3 centre = new float3(step);
+
+            for (int i = 0; i < 30; i += 3)
+            {
+                step *= 0.5f;
+                if (vertPos.x < centre.x)
+                {
+                    centre.x -= step;
+                }
+                else
+                {
+                    centre.x += step;
+                    mortonCode |= (uint)(1 << i);
+                }
+
+                if (vertPos.y < centre.y)
+                {
+                    centre.y -= step;
+                }
+                else
+                {
+                    centre.y += step;
+                    mortonCode |= (uint)(1 << (i + 1));
+                }
+
+                if (vertPos.z < centre.z)
+                {
+                    centre.z -= step;
+                }
+                else
+                {
+                    centre.z += step;
+                    mortonCode |= (uint)(1 << (i + 2));
+                }
+            }
+
+            GPUEmulator.Buffer("Vertices")[vertIndex] = vertPos;
+            GPUEmulator.Buffer("MortonCode")[vertIndex] = mortonCode;
+            vertHash[id.x + id.y * size + id.z * size * size] = vertIndex;
+        }
+
+        int octreeIndex = coord.x + (coord.y + (coord.z * size)) * size;
+        GPUEmulator.Buffer("Octree")[octreeIndex] = new float4(id.xyz, 1);
+    }
+}
+
 public class DualContourTest : MonoBehaviour
 {
     public int size;
     public float scale = 1.0f;
-    public float mult = 1.0f;
+    public float surfaceLevel = 0.0f;
     public Texture3D noise;
+
+    public float mult;
+    public float add;
+
+    [Header("Debug")]
+    public bool showMortonCodes;
+    public bool showBinaryCodes;
+    public bool showOctree;
+
+    float3[] vertices;
+    float4[] octree;
+    uint[] mortonCodes;
 
     public void Run()
     {
+        Noise noiseShader = new Noise();
+        noiseShader.scale = scale;
+        noiseShader.mult = mult;
+        noiseShader.add = add;
+
         Texture3DEmulator noiseTexture = new Texture3DEmulator(size + 4, size + 4, size + 4);
         GPUEmulator.BindTexture("noise", ref noiseTexture);
 
-        GPUEmulator.Dispatch(size + 4, size + 4, size + 4, id =>
-        {
-            GPUEmulator.Texture("noise")[id] = Mathf.Pow((Perlin.Fbm(new Vector3(id.x, id.y, id.z) * scale, 5) + 1f) / 2f, mult);
-        });
+        GPUEmulator.Dispatch(size + 4, size + 4, size + 4, noiseShader);
 
         noise = noiseTexture.Get();
+
+        CreateVertices createVertices = new CreateVertices();
+        createVertices.size = size + 2;
+        createVertices.surfaceLevel = surfaceLevel;
+
+        BufferEmulator vertexBuffer = new BufferEmulator(size * size * size);
+        vertexBuffer.SetCounter(0);
+        BufferEmulator mortonCodeBuffer = new BufferEmulator(size * size * size);
+        GPUEmulator.BindBuffer("Vertices", ref vertexBuffer);
+        GPUEmulator.BindBuffer("MortonCode", ref mortonCodeBuffer);
+
+        BufferEmulator octreeBuffer = new BufferEmulator((size + 2) * (size + 2) * (size + 2));
+        GPUEmulator.BindBuffer("Octree", ref octreeBuffer);
+
+        GPUEmulator.Dispatch(size + 2, size + 2, size + 2, createVertices);
+
+        CollapseOctree collapseOctree = new CollapseOctree();
+        int curScale = 2;
+        while(curScale < size + 2)
+        {
+            collapseOctree.size = size + 2;
+            collapseOctree.scale = curScale;
+            collapseOctree.surfaceLevel = surfaceLevel;
+
+            GPUEmulator.Dispatch((size + 2) / curScale, (size + 2) / curScale, (size + 2) / curScale, collapseOctree);
+
+            curScale *= 2;
+        }
+        
+        vertices = new float3[vertexBuffer.GetCount()];
+        mortonCodes = new uint[vertices.Length];
+        octree = new float4[(size + 2) * (size + 2) * (size + 2)];
+
+        vertexBuffer.GetData(ref vertices);
+        mortonCodeBuffer.GetData(ref mortonCodes);
+        octreeBuffer.GetData(ref octree);
+
+        int count = 0;
+        foreach(float4 f in octree)
+        {
+            if (f.w > 0) count++;
+        }
+
+        Debug.Log($"Raw: {(size + 2) * (size + 2) * (size + 2)}, Octree: {count}, Compression ratio of {(float)count / ((size + 2) * (size + 2) * (size + 2))}");
+    }
+
+    static void drawString(string text, Vector3 worldPos, UnityEngine.Color? colour = null)
+    {
+        UnityEditor.Handles.BeginGUI();
+        if (colour.HasValue) GUI.color = colour.Value;
+        var view = UnityEditor.SceneView.currentDrawingSceneView;
+        Vector3 screenPos = view.camera.WorldToScreenPoint(worldPos);
+
+        if (screenPos.y < 0 || screenPos.y > Screen.height || screenPos.x < 0 || screenPos.x > Screen.width || screenPos.z < 0)
+        {
+            UnityEditor.Handles.EndGUI();
+            return;
+        }
+
+        Vector2 size = GUI.skin.label.CalcSize(new GUIContent(text));
+        GUI.Label(new Rect(screenPos.x - (size.x / 2), -screenPos.y + view.position.height + 4, size.x, size.y), text);
+        UnityEditor.Handles.EndGUI();
+    }
+
+    private void OnDrawGizmos()
+    {
+        if(vertices != null)
+        {
+            for(int i = 0; i < vertices.Length; i++)
+            {
+                float3 v = vertices[i];
+                Gizmos.DrawSphere(v, 0.1f);
+                if(showMortonCodes)
+                {
+                    if(showBinaryCodes)
+                        drawString(Convert.ToString(mortonCodes[i], 2), v);
+                    else
+                        drawString(mortonCodes[i].ToString(), v);
+                }
+            }
+        }
+
+        Gizmos.color = UnityEngine.Color.green;
+        float centre = (size + 2) / 2f;
+        //Gizmos.DrawWireCube(new float3(centre), new float3(size));
+
+        //Gizmos.color = new UnityEngine.Color(0, 1, 0, 0.3f);
+        //Gizmos.DrawWireCube(new float3(centre), new float3(size + 2));
+
+        if(octree != null && showOctree)
+        {
+            foreach(float4 oct in octree)
+            {
+                if (oct.w <= 0) continue;
+                Gizmos.color = new UnityEngine.Color(0, 1, 0, 1f / oct.w);
+                Gizmos.DrawWireCube(oct.xyz + (oct.w / 2f), new float3(oct.w));
+            }
+        }
     }
 }
