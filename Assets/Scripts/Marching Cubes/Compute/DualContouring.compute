@@ -1,6 +1,7 @@
 // Each #kernel tells which function to compile; you can have many kernels
 #pragma enable_d3d11_debug_symbols
 
+#pragma kernel CollapseOctree
 #pragma kernel CreateVertices
 #pragma kernel CreateIndices
 #pragma kernel Initialize
@@ -34,6 +35,9 @@ RWStructuredBuffer<int> Indices;
 RWStructuredBuffer<float3> Normals;
 //RWStructuredBuffer<float> NoiseBuffer;
 
+RWStructuredBuffer<float4> OctreeLeaves;
+
+int scale;
 int size;
 float noiseScale;
 
@@ -61,6 +65,59 @@ float3 calculateNormal(int3 coord)
     float dz = sampleDensity(coord + offsetZ) - sampleDensity(coord - offsetZ);
 
     return -normalize(float3(dx, dy, dz));
+}
+
+[numthreads(8, 8, 8)]
+void CollapseOctree(uint3 id : SV_DispatchThreadID)
+{
+    uint3 coord = id * scale;
+    if (coord.x >= size || coord.y >= size || coord.z >= size)
+        return;
+
+    // TODO: Clear octree in its own kernel
+    if (scale == 1)
+    {
+        OctreeLeaves[id.x + (id.y + id.z * size) * size] = float4(id.xyz, 1);
+        return;
+    }
+
+    bool belowSurface = DensityTexture[coord + 2] < surfaceLevel;
+    for (int z = 0; z <= scale; z += scale / 2)
+    {
+        for (int y = 0; y <= scale; y += scale / 2)
+        {
+            for (int x = 0; x <= scale; x += scale / 2)
+            {
+                uint3 neighbourCoord = coord + uint3(x, y, z);
+                int index = neighbourCoord.x + (neighbourCoord.y + (neighbourCoord.z * size)) * size;
+                if (x < scale && y < scale && z < scale && OctreeLeaves[index].w != scale / 2)
+                    return;
+
+                float density = DensityTexture[neighbourCoord + 2];
+                if ((density < surfaceLevel) != belowSurface)
+                    return;
+            }
+        }
+    }
+
+    for (int z = 0; z < scale; z += scale / 2)
+    {
+        for (int y = 0; y < scale; y += scale / 2)
+        {
+            for (int x = 0; x < scale; x += scale / 2)
+            {
+                if (x == 0 && y == 0 && z == 0)
+                    continue;
+
+                uint3 neighbourCoord = coord + uint3(x, y, z);
+                int index = neighbourCoord.x + (neighbourCoord.y + (neighbourCoord.z * size)) * size;
+                OctreeLeaves[index] = 0;
+            }
+        }
+    }
+
+    int octreeIndex = coord.x + (coord.y + (coord.z * size)) * size;
+    OctreeLeaves[octreeIndex] = float4(coord.xyz, scale);
 }
 
 [numthreads(8,8,8)]

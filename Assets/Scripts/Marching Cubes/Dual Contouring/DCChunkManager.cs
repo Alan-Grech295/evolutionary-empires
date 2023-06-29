@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Threading.Tasks;
@@ -38,6 +39,7 @@ public class DCChunkManager : MonoBehaviour
     HashSet<Vector3>[] visibleChunks = new HashSet<Vector3>[2];
     RenderTexture noise;
 
+    private int k_CollapseOctree;
     private int k_CreateVertices;
     private int k_CreateIndices;
     private int k_HashInit;
@@ -49,7 +51,8 @@ public class DCChunkManager : MonoBehaviour
     private ComputeBuffer vertexBuffer;
     private ComputeBuffer indexBuffer;
     private ComputeBuffer normalsBuffer;
-    
+    private ComputeBuffer octreeBuffer;
+
     private ComputeBuffer countBuffer;
 
     private int[] indicesCount = new int[1];
@@ -85,6 +88,7 @@ public class DCChunkManager : MonoBehaviour
 
         THREAD_BLOCKS = HASH_BUFFER_SIZE / 64;
 
+        k_CollapseOctree = dualContouringCompute.FindKernel("CollapseOctree");
         k_CreateVertices = dualContouringCompute.FindKernel("CreateVertices");
         k_CreateIndices = dualContouringCompute.FindKernel("CreateIndices");
         k_HashInit = dualContouringCompute.FindKernel("Initialize");
@@ -130,6 +134,7 @@ public class DCChunkManager : MonoBehaviour
 
         THREAD_BLOCKS = HASH_BUFFER_SIZE / 64;
 
+        k_CollapseOctree = dualContouringCompute.FindKernel("CollapseOctree");
         k_CreateVertices = dualContouringCompute.FindKernel("CreateVertices");
         k_CreateIndices = dualContouringCompute.FindKernel("CreateIndices");
         k_HashInit = dualContouringCompute.FindKernel("Initialize");
@@ -156,7 +161,7 @@ public class DCChunkManager : MonoBehaviour
         stopwatch.Stop();
         UnityEngine.Debug.Log($"Generated chunks in {stopwatch.Elapsed.TotalMilliseconds}ms");
 
-        ComputeUtils.Release(vertexBuffer, indexBuffer, countBuffer, vertHashTable, normalsBuffer);
+        ComputeUtils.Release(octreeBuffer, vertexBuffer, indexBuffer, countBuffer, vertHashTable, normalsBuffer);
     }
 
     IEnumerator UpdateChunks()
@@ -190,7 +195,8 @@ public class DCChunkManager : MonoBehaviour
                 Chunk chunk = chunks[chunkPos];
                 if(chunk.meshLOD > lod)
                 {
-                    chunk.Recreate(GenerateMesh(chunkPos, numVoxels), terrainMat, lod);
+                    var (mesh, octree) = GenerateMesh(chunkPos, numVoxels);
+                    chunk.Recreate(mesh, terrainMat, lod, octree);
                     chunk.gameObject.transform.localScale = Vector3.one * ((float)chunkSize / numVoxels);
                 }
                 chunk.gameObject.SetActive(true);
@@ -228,7 +234,8 @@ public class DCChunkManager : MonoBehaviour
                 chunkGO.AddComponent<MeshCollider>();
 
                 Chunk chunk = chunkGO.AddComponent<Chunk>();
-                chunk.Recreate(GenerateMesh(chunkPos, numVoxels), terrainMat, lod);
+                var (mesh, octree) = GenerateMesh(chunkPos, numVoxels);
+                chunk.Recreate(mesh, terrainMat, lod, octree);
 
                 chunks.Add(chunkPos, chunk);
             }
@@ -300,19 +307,12 @@ public class DCChunkManager : MonoBehaviour
     }
 
     // Generates the mesh
-    // The 3D noise is generated first
-    // The vertices are then created and stored in a hash table. Each voxel is responsible
-    // for creating specific vertices such that no vertices are duplicated. Right now indices
-    // are stored as the edge hash not the index of the vertex in the vertex buffer as vertices 
-    // not have been created yet.
-    // In the final pass the index buffer values are converted from the edge hashes to the actual
-    // vertex index.
-    public Mesh GenerateMesh(Vector3 offset, int numVoxels)
+    public Tuple<Mesh, Vector4[]> GenerateMesh(Vector3 offset, int numVoxels)
     {
         int actualSize = numVoxels + 2;
         // Generates the 3D noise texture
         if (!GenerateNoiseTex(offset, actualSize))
-            return new Mesh();
+            return new Tuple<Mesh, Vector4[]>(new Mesh(), new Vector4[0]);
 
         Mesh mesh = new Mesh();
         mesh.indexFormat = IndexFormat.UInt32;
@@ -326,6 +326,25 @@ public class DCChunkManager : MonoBehaviour
         vertexBuffer.SetCounterValue(0);
         indexBuffer.SetCounterValue(0);
 
+        dualContouringCompute.SetTexture(k_CollapseOctree, "DensityTexture", noise);
+        dualContouringCompute.SetBuffer(k_CollapseOctree, "OctreeLeaves", octreeBuffer);
+
+        dualContouringCompute.SetInt("size", numVoxels);
+        dualContouringCompute.SetInt("scale", 1);
+        dualContouringCompute.SetFloat("surfaceLevel", surfaceLevel);
+
+        int scale = 1;
+        while(scale < numVoxels)
+        {
+            dualContouringCompute.SetInt("scale", scale);
+            ComputeUtils.Dispatch(dualContouringCompute, numVoxels / scale, numVoxels / scale, numVoxels / scale, k_CollapseOctree);
+            scale *= 2;
+        }
+
+        Vector4[] octree = new Vector4[numVoxels * numVoxels * numVoxels];
+        octreeBuffer.GetData(octree);
+
+        // Creates the vertices
         dualContouringCompute.SetTexture(k_CreateVertices, "DensityTexture", noise);
         dualContouringCompute.SetBuffer(k_CreateVertices, "Vertices", vertexBuffer);
         dualContouringCompute.SetBuffer(k_CreateVertices, "Indices", indexBuffer);
@@ -371,13 +390,13 @@ public class DCChunkManager : MonoBehaviour
         mesh.name = $"{offset}";
 
         if (indices.Length == 0)
-            return mesh;
+            return new Tuple<Mesh, Vector4[]>(mesh, octree);
 
         mesh.SetVertices(verts);
         mesh.SetTriangles(indices, 0);
         mesh.SetNormals(normals);
 
-        return mesh;
+        return new Tuple<Mesh, Vector4[]>(mesh, octree);
     }
 
     public bool GenerateNoiseTex(Vector3 offset, int numVoxels)
@@ -411,6 +430,7 @@ public class DCChunkManager : MonoBehaviour
         normalsBuffer.Release();
         vertHashTable.Release();
         countBuffer.Release();
+        octreeBuffer.Release();
     }
 
     // Taken from Sebastian Lague https://github.com/SebLague/Terraforming/blob/main/Assets/Marching%20Cubes/Scripts/GenTest.cs#L315
@@ -448,6 +468,7 @@ public class DCChunkManager : MonoBehaviour
 
         vertHashTable = new ComputeBuffer(HASH_BUFFER_SIZE, sizeof(int) * 2); // Size is power of 2
         vertexBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels / 4, sizeof(float) * 3, ComputeBufferType.Counter);
+        octreeBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels, sizeof(float) * 4, ComputeBufferType.Counter);
         normalsBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels / 4, sizeof(float) * 3, ComputeBufferType.Structured);
         indexBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels, sizeof(int), ComputeBufferType.Counter);
 
