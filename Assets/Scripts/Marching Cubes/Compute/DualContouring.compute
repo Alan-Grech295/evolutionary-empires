@@ -5,6 +5,7 @@
 #pragma kernel CreateVertices
 #pragma kernel CreateIndices
 #pragma kernel Initialize
+#pragma kernel AddBorder
 
 #pragma kernel CalculateNormals
 
@@ -149,7 +150,79 @@ void CollapseOctree(uint3 id : SV_DispatchThreadID)
     OctreeLeaves[octreeIndex] = float4(coord.xyz, scale);
 }
 
+int numBorderVoxels;
+
+[numthreads(128, 1, 1)]
+void AddBorder(uint3 id : SV_DispatchThreadID)
+{
+    int sqrVox = numBorderVoxels * numBorderVoxels;
+
+    if (id.x >= sqrVox * 3 + numBorderVoxels * 3 + 1)
+        return;
+    
+        // XY voxels
+    if (id.x < sqrVox)
+    {
+        int x = id.x % numBorderVoxels;
+        int y = floor((float) id.x / numBorderVoxels);
+        float4 octreeLeaf = float4(x * scale, y * scale, -scale, scale);
+        PackedOctreeLeaves[PackedOctreeLeaves.IncrementCounter()] = octreeLeaf;
+    }
+        // YZ voxels
+    else if (id.x < sqrVox * 2)
+    {
+        id.x -= sqrVox;
+        int z = id.x % numBorderVoxels;
+        int y = floor((float) id.x / numBorderVoxels);
+        float4 octreeLeaf = float4(-scale, y * scale, z * scale, scale);
+        PackedOctreeLeaves[PackedOctreeLeaves.IncrementCounter()] = octreeLeaf;
+    }
+        // XZ voxels
+    else if (id.x < sqrVox * 3)
+    {
+        id.x -= sqrVox * 2;
+        int x = id.x % numBorderVoxels;
+        int z = floor((float) id.x / numBorderVoxels);
+        float4 octreeLeaf = float4(x * scale, -scale, z * scale, scale);
+        PackedOctreeLeaves[PackedOctreeLeaves.IncrementCounter()] = octreeLeaf;
+    }
+        // X Line
+    else if (id.x < sqrVox * 3 + numBorderVoxels)
+    {
+        id.x -= sqrVox * 3;
+        float4 octreeLeaf = float4(id.x * scale, -scale, -scale, scale);
+        PackedOctreeLeaves[PackedOctreeLeaves.IncrementCounter()] = octreeLeaf;
+    }
+        // Y Line
+    else if (id.x < sqrVox * 3 + numBorderVoxels * 2)
+    {
+        id.x -= sqrVox * 3 + numBorderVoxels;
+        float4 octreeLeaf = float4(-scale, id.x * scale, -scale, scale);
+        PackedOctreeLeaves[PackedOctreeLeaves.IncrementCounter()] = octreeLeaf;
+    }
+        // Z Line
+    else if (id.x < sqrVox * 3 + numBorderVoxels * 3)
+    {
+        id.x -= sqrVox * 3 + numBorderVoxels * 2;
+        float4 octreeLeaf = float4(-scale, -scale, id.x * scale, scale);
+        PackedOctreeLeaves[PackedOctreeLeaves.IncrementCounter()] = octreeLeaf;
+    }
+    else
+    {
+        float4 octreeLeaf = float4(-scale, -scale, -scale, scale);
+        PackedOctreeLeaves[PackedOctreeLeaves.IncrementCounter()] = octreeLeaf;
+    }
+}
+
 int numOctreeLeaves;
+
+uint GetIndex(int3 coord, int size)
+{
+    coord += size;
+    size += size;
+    int defIndex = coord.x + (coord.y + coord.z * size) * size;
+    return defIndex;
+}
 
 [numthreads(256,1,1)]
 void CreateVertices (uint3 id : SV_DispatchThreadID)
@@ -207,7 +280,7 @@ void CreateVertices (uint3 id : SV_DispatchThreadID)
         
         Vertices[vertIndex] = vertPos - offset;
         //Normals[vertIndex] = -calculateNormal(vertPos);
-        HashInsert(octreeLeaf.x + (octreeLeaf.y + octreeLeaf.z * size) * size, vertIndex);
+        HashInsert(GetIndex(octreeLeaf.xyz, size), vertIndex);
     }
 }
 
@@ -271,7 +344,7 @@ void CreateIndices(uint3 id : SV_DispatchThreadID)
     };
     
     float3 voxelBL = id + 1;
-    int curCubeIndex = HashLookup((voxelBL.x) + ((voxelBL.y) + (voxelBL.z) * (size + 2)) * (size + 2));
+    int curCubeIndex = HashLookup(GetIndex(voxelBL, size + 2));
     
     for (int i = 0; i < 12; i++)
     {
@@ -287,7 +360,7 @@ void CreateIndices(uint3 id : SV_DispatchThreadID)
             for(int j = 0; j < 3; j++)
             {
                 uint3 v = neighbourVoxels[j] + voxelBL;
-                neighbourIndices[j] = HashLookup(v.x + (v.y + v.z * (size + 2)) * (size + 2));
+                neighbourIndices[j] = HashLookup(GetIndex(v, size + 2));
             }
             
             int index = Indices.IncrementCounter() * 6;
@@ -339,7 +412,7 @@ float3 calculateNormal2(int3 id, float3 vertexPos)
                 continue;
             }
         
-            int neighbourID = neighbourPos.x + neighbourPos.y * size + neighbourPos.z * size * size;
+            uint neighbourID = GetIndex(neighbourPos, size);
             int vertIndex = HashLookup(neighbourID);
         
             if (vertIndex != EMPTY)
@@ -366,7 +439,7 @@ void CalculateNormals(uint3 id : SV_DispatchThreadID)
     if (id.x >= size || id.y >= size || id.z >= size)
         return;
     
-    int vertID = HashLookup(id.x + id.y * size + id.z * size * size);
+    int vertID = HashLookup(GetIndex(id, size));
     if(vertID == EMPTY)
         return;
     

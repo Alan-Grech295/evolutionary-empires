@@ -40,6 +40,7 @@ public class DCChunkManager : MonoBehaviour
     RenderTexture noise;
 
     private int k_CollapseOctree;
+    private int k_AddBorder;
     private int k_CreateVertices;
     private int k_CreateIndices;
     private int k_HashInit;
@@ -90,6 +91,7 @@ public class DCChunkManager : MonoBehaviour
         THREAD_BLOCKS = HASH_BUFFER_SIZE / 64;
 
         k_CollapseOctree = dualContouringCompute.FindKernel("CollapseOctree");
+        k_AddBorder = dualContouringCompute.FindKernel("AddBorder");
         k_CreateVertices = dualContouringCompute.FindKernel("CreateVertices");
         k_CreateIndices = dualContouringCompute.FindKernel("CreateIndices");
         k_HashInit = dualContouringCompute.FindKernel("Initialize");
@@ -136,6 +138,7 @@ public class DCChunkManager : MonoBehaviour
         THREAD_BLOCKS = HASH_BUFFER_SIZE / 64;
 
         k_CollapseOctree = dualContouringCompute.FindKernel("CollapseOctree");
+        k_AddBorder = dualContouringCompute.FindKernel("AddBorder");
         k_CreateVertices = dualContouringCompute.FindKernel("CreateVertices");
         k_CreateIndices = dualContouringCompute.FindKernel("CreateIndices");
         k_HashInit = dualContouringCompute.FindKernel("Initialize");
@@ -343,6 +346,14 @@ public class DCChunkManager : MonoBehaviour
             ComputeUtils.Dispatch(dualContouringCompute, actualSize / scale, actualSize / scale, actualSize / scale, k_CollapseOctree);
             scale *= 2;
         }
+
+        dualContouringCompute.SetBuffer(k_AddBorder, "PackedOctreeLeaves", packedOctreeBuffer);
+        int borderScale = 8;
+        int numBorderVoxels = actualSize / 8;
+        dualContouringCompute.SetInt("numBorderVoxels", numBorderVoxels);
+        dualContouringCompute.SetInt("scale", borderScale);
+
+        ComputeUtils.Dispatch(dualContouringCompute, numBorderVoxels * numBorderVoxels * 3 + numBorderVoxels * 3 + 1, 1, 1, k_AddBorder);
 
         // TEMP
         var (octree, _) = ComputeUtils.ReadData<Vector4>(packedOctreeBuffer, countBuffer);

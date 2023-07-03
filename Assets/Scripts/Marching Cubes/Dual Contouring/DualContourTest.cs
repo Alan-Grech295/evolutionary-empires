@@ -271,6 +271,68 @@ public class CollapseOctree : IComputeEmulator
     }
 }
 
+public class AddBorder : IComputeEmulator
+{
+    public int numVoxels;
+    public int scale;
+    public void Main(int3 id)
+    {
+        int sqrVox = numVoxels * numVoxels;
+        // XY voxels
+        if(id.x < sqrVox)
+        {
+            int x = id.x % numVoxels;
+            int y = Mathf.FloorToInt((float)id.x / numVoxels);
+            float4 octreeLeaf = new float4(x * scale, y * scale, -scale, scale);
+            GPUEmulator.Buffer("PackedOctree").Append(octreeLeaf);
+        }
+        // YZ voxels
+        else if (id.x < sqrVox * 2)
+        {
+            id.x -= sqrVox;
+            int z = id.x % numVoxels;
+            int y = Mathf.FloorToInt((float)id.x / numVoxels);
+            float4 octreeLeaf = new float4(-scale, y * scale, z * scale, scale);
+            GPUEmulator.Buffer("PackedOctree").Append(octreeLeaf);
+        }
+        // XZ voxels
+        else if (id.x < sqrVox * 3)
+        {
+            id.x -= sqrVox * 2;
+            int x = id.x % numVoxels;
+            int z = Mathf.FloorToInt((float)id.x / numVoxels);
+            float4 octreeLeaf = new float4(x * scale, -scale, z * scale, scale);
+            GPUEmulator.Buffer("PackedOctree").Append(octreeLeaf);
+        }
+        // X Line
+        else if(id.x < sqrVox * 3 + numVoxels)
+        {
+            id.x -= sqrVox * 3;
+            float4 octreeLeaf = new float4(id.x * scale, -scale, -scale, scale);
+            GPUEmulator.Buffer("PackedOctree").Append(octreeLeaf);
+        }
+        // Y Line
+        else if (id.x < sqrVox * 3 + numVoxels * 2)
+        {
+            id.x -= sqrVox * 3 + numVoxels;
+            float4 octreeLeaf = new float4(-scale, id.x * scale, -scale, scale);
+            GPUEmulator.Buffer("PackedOctree").Append(octreeLeaf);
+        }
+        // Z Line
+        else if (id.x < sqrVox * 3 + numVoxels * 3)
+        {
+            id.x -= sqrVox * 3 + numVoxels * 2;
+            float4 octreeLeaf = new float4(-scale, -scale, id.x * scale, scale);
+            GPUEmulator.Buffer("PackedOctree").Append(octreeLeaf);
+        }
+        else
+        {
+            float4 octreeLeaf = new float4(-scale, -scale, -scale, scale);
+            GPUEmulator.Buffer("PackedOctree").Append(octreeLeaf);
+        }
+    }
+}
+
 public class CreateVertices : IComputeEmulator
 {
     public int numOctreeLeaves;
@@ -397,6 +459,8 @@ public class DualContourTest : MonoBehaviour
     public bool showOctree;
     public bool printOctree;
 
+    public int borderScale = 2;
+
     float3[] vertices;
     float4[] octree;
     uint[] mortonCodes;
@@ -415,37 +479,43 @@ public class DualContourTest : MonoBehaviour
 
         noise = noiseTexture.Get();
 
-        BufferEmulator octreeBuffer = new BufferEmulator((size + 2) * (size + 2) * (size + 2));
-        BufferEmulator packedOctreeBuffer = new BufferEmulator((size + 2) * (size + 2) * (size + 2) / 2);
+        BufferEmulator octreeBuffer = new BufferEmulator(size * size * size);
+        BufferEmulator packedOctreeBuffer = new BufferEmulator(size * size * size);
         GPUEmulator.BindBuffer("Octree", ref octreeBuffer);
         GPUEmulator.BindBuffer("PackedOctree", ref packedOctreeBuffer);
 
         CollapseOctree collapseOctree = new CollapseOctree();
         int curScale = 1;
-        while(curScale <= size + 2)
+        while(curScale <= size)
         {
-            collapseOctree.size = size + 2;
+            collapseOctree.size = size;
             collapseOctree.scale = curScale;
             collapseOctree.surfaceLevel = surfaceLevel;
 
-            GPUEmulator.Dispatch((size + 2) / curScale, (size + 2) / curScale, (size + 2) / curScale, collapseOctree);
+            GPUEmulator.Dispatch(size / curScale, size / curScale, size / curScale, collapseOctree);
 
             curScale *= 2;
         }
-        
+
+        AddBorder addBorder = new AddBorder();
+        addBorder.scale = borderScale;
+        addBorder.numVoxels = size / borderScale;
+
+        GPUEmulator.Dispatch(addBorder.numVoxels * addBorder.numVoxels * 3 + addBorder.numVoxels * 3 + 1, 1, 1, addBorder);
+
         octree = new float4[packedOctreeBuffer.GetCount()];
 
         packedOctreeBuffer.GetData(ref octree);
 
         int count = 0;
-        foreach(float4 f in octree)
+        foreach (float4 f in octree)
         {
             count++;
         }
 
-        Debug.Log($"Raw: {(size + 2) * (size + 2) * (size + 2)}, Octree: {count}, Compression ratio of {(float)count / ((size + 2) * (size + 2) * (size + 2))}");
+        Debug.Log($"Raw: {size * size * size}, Octree: {count}, Compression ratio of {(float)count / (size * size * size)}");
 
-        CreateVertices createVertices = new CreateVertices();
+        /*CreateVertices createVertices = new CreateVertices();
         createVertices.size = size + 2;
         createVertices.surfaceLevel = surfaceLevel;
         createVertices.numOctreeLeaves = packedOctreeBuffer.GetCount();
@@ -462,7 +532,7 @@ public class DualContourTest : MonoBehaviour
         mortonCodes = new uint[vertices.Length];
 
         vertexBuffer.GetData(ref vertices);
-        mortonCodeBuffer.GetData(ref mortonCodes);
+        mortonCodeBuffer.GetData(ref mortonCodes);*/
     }
 
     static void drawString(string text, Vector3 worldPos, UnityEngine.Color? colour = null)
@@ -502,7 +572,7 @@ public class DualContourTest : MonoBehaviour
         }
 
         Gizmos.color = UnityEngine.Color.green;
-        float centre = (size + 2) / 2f;
+        float centre = size / 2f;
         //Gizmos.DrawWireCube(new float3(centre), new float3(size));
 
         //Gizmos.color = new UnityEngine.Color(0, 1, 0, 0.3f);
