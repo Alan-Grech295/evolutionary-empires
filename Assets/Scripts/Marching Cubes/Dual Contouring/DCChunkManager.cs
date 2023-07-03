@@ -52,6 +52,7 @@ public class DCChunkManager : MonoBehaviour
     private ComputeBuffer indexBuffer;
     private ComputeBuffer normalsBuffer;
     private ComputeBuffer octreeBuffer;
+    private ComputeBuffer packedOctreeBuffer;
 
     private ComputeBuffer countBuffer;
 
@@ -161,7 +162,7 @@ public class DCChunkManager : MonoBehaviour
         stopwatch.Stop();
         UnityEngine.Debug.Log($"Generated chunks in {stopwatch.Elapsed.TotalMilliseconds}ms");
 
-        ComputeUtils.Release(octreeBuffer, vertexBuffer, indexBuffer, countBuffer, vertHashTable, normalsBuffer);
+        ComputeUtils.Release(octreeBuffer, packedOctreeBuffer, vertexBuffer, indexBuffer, countBuffer, vertHashTable, normalsBuffer);
     }
 
     IEnumerator UpdateChunks()
@@ -325,40 +326,45 @@ public class DCChunkManager : MonoBehaviour
 
         vertexBuffer.SetCounterValue(0);
         indexBuffer.SetCounterValue(0);
+        packedOctreeBuffer.SetCounterValue(0);
 
         dualContouringCompute.SetTexture(k_CollapseOctree, "DensityTexture", noise);
         dualContouringCompute.SetBuffer(k_CollapseOctree, "OctreeLeaves", octreeBuffer);
+        dualContouringCompute.SetBuffer(k_CollapseOctree, "PackedOctreeLeaves", packedOctreeBuffer);
 
-        dualContouringCompute.SetInt("size", numVoxels);
+        dualContouringCompute.SetInt("size", actualSize);
         dualContouringCompute.SetInt("scale", 1);
         dualContouringCompute.SetFloat("surfaceLevel", surfaceLevel);
 
         int scale = 1;
-        while(scale < numVoxels)
+        while(scale <= actualSize)
         {
             dualContouringCompute.SetInt("scale", scale);
-            ComputeUtils.Dispatch(dualContouringCompute, numVoxels / scale, numVoxels / scale, numVoxels / scale, k_CollapseOctree);
+            ComputeUtils.Dispatch(dualContouringCompute, actualSize / scale, actualSize / scale, actualSize / scale, k_CollapseOctree);
             scale *= 2;
         }
 
-        Vector4[] octree = new Vector4[numVoxels * numVoxels * numVoxels];
-        octreeBuffer.GetData(octree);
+        // TEMP
+        var (octree, _) = ComputeUtils.ReadData<Vector4>(packedOctreeBuffer, countBuffer);
 
         // Creates the vertices
         dualContouringCompute.SetTexture(k_CreateVertices, "DensityTexture", noise);
         dualContouringCompute.SetBuffer(k_CreateVertices, "Vertices", vertexBuffer);
+        dualContouringCompute.SetBuffer(k_CreateVertices, "PackedOctreeLeaves", packedOctreeBuffer);
         dualContouringCompute.SetBuffer(k_CreateVertices, "Indices", indexBuffer);
         dualContouringCompute.SetBuffer(k_CreateVertices, "Normals", normalsBuffer);
 
         dualContouringCompute.SetVector("offset", new Vector4(transform.position.x, transform.position.y, transform.position.z, 0));
 
+        int octreeSize = ComputeUtils.GetSize(packedOctreeBuffer, countBuffer);
         dualContouringCompute.SetInt("size", actualSize);
+        dualContouringCompute.SetInt("numOctreeLeaves", octreeSize);
         dualContouringCompute.SetFloat("noiseScale", noiseScale);
         dualContouringCompute.SetFloat("surfaceLevel", surfaceLevel);
 
         dualContouringCompute.SetBuffer(k_CreateVertices, "b_hash", vertHashTable);
 
-        ComputeUtils.Dispatch(dualContouringCompute, actualSize, actualSize, actualSize, k_CreateVertices);
+        ComputeUtils.Dispatch(dualContouringCompute, octreeSize, 1, 1, k_CreateVertices);
 
         dualContouringCompute.SetTexture(k_CalculateNormals, "DensityTexture", noise);
         dualContouringCompute.SetBuffer(k_CalculateNormals, "Vertices", vertexBuffer);
@@ -425,12 +431,8 @@ public class DCChunkManager : MonoBehaviour
 
     private void OnDestroy()
     {
-        vertexBuffer.Release();
-        indexBuffer.Release();
-        normalsBuffer.Release();
-        vertHashTable.Release();
-        countBuffer.Release();
-        octreeBuffer.Release();
+        ComputeUtils.Release(octreeBuffer, packedOctreeBuffer, vertexBuffer, indexBuffer, countBuffer, vertHashTable, normalsBuffer);
+
     }
 
     // Taken from Sebastian Lague https://github.com/SebLague/Terraforming/blob/main/Assets/Marching%20Cubes/Scripts/GenTest.cs#L315
@@ -462,13 +464,15 @@ public class DCChunkManager : MonoBehaviour
     void InitializeComputeBuffers()
     {
         int numVoxels = lodNumVoxels[0];
+        int paddedVoxels = numVoxels + 2;
         Create3DTex(ref noise, numVoxels + 4, "Noise Texure");
 
         densityTypeFlags = new ComputeBuffer(1, sizeof(int) * 4, ComputeBufferType.Structured);
 
         vertHashTable = new ComputeBuffer(HASH_BUFFER_SIZE, sizeof(int) * 2); // Size is power of 2
         vertexBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels / 4, sizeof(float) * 3, ComputeBufferType.Counter);
-        octreeBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels, sizeof(float) * 4, ComputeBufferType.Counter);
+        octreeBuffer = new ComputeBuffer(paddedVoxels * paddedVoxels * paddedVoxels, sizeof(float) * 4, ComputeBufferType.Counter);
+        packedOctreeBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels / 2, sizeof(float) * 4, ComputeBufferType.Counter);
         normalsBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels / 4, sizeof(float) * 3, ComputeBufferType.Structured);
         indexBuffer = new ComputeBuffer(numVoxels * numVoxels * numVoxels, sizeof(int), ComputeBufferType.Counter);
 

@@ -8,6 +8,7 @@ public class Chunk : MonoBehaviour
     public int meshLOD;
     public bool showOctree = false;
     public bool printOctree = false;
+    public bool showVertices = false;
     Mesh mesh;
     MeshFilter filter;
     MeshCollider collider;
@@ -48,6 +49,15 @@ public class Chunk : MonoBehaviour
             {
                 if (oct.w <= 0) continue;
                 Debug.Log($"Position: {oct.xyz}, Size: {oct.w}");
+            }
+        }
+
+        if(showVertices)
+        {
+            foreach(float3 vert in mesh.vertices)
+            {
+                Gizmos.color = Color.white;
+                Gizmos.DrawSphere(vert * transform.localScale + (float3)transform.position, 0.1f);
             }
         }
     }

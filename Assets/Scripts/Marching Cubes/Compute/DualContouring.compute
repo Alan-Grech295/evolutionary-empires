@@ -36,6 +36,7 @@ RWStructuredBuffer<float3> Normals;
 //RWStructuredBuffer<float> NoiseBuffer;
 
 RWStructuredBuffer<float4> OctreeLeaves;
+RWStructuredBuffer<float4> PackedOctreeLeaves;
 
 int scale;
 int size;
@@ -51,7 +52,7 @@ float sampleDensity(int3 coord)
     return DensityTexture[coord];
 }
 
-float3 calculateNormal(int3 coord)
+float3 calculateNormal(float3 coord)
 {
     coord += 1;
     float d = 1.0f;
@@ -65,6 +66,27 @@ float3 calculateNormal(int3 coord)
     float dz = sampleDensity(coord + offsetZ) - sampleDensity(coord - offsetZ);
 
     return -normalize(float3(dx, dy, dz));
+}
+
+void AddChildLeaves(uint3 coord)
+{
+    for (int z = 0; z < scale; z += scale / 2)
+    {
+        for (int y = 0; y < scale; y += scale / 2)
+        {
+            for (int x = 0; x < scale; x += scale / 2)
+            {
+                uint3 neighbourCoord = coord + uint3(x, y, z);
+                int index = neighbourCoord.x + (neighbourCoord.y + neighbourCoord.z * size) * size;
+                float4 octreeLeaf = OctreeLeaves[index];
+                if (octreeLeaf.w == scale / 2)
+                {
+                    int index = PackedOctreeLeaves.IncrementCounter();
+                    PackedOctreeLeaves[index] = octreeLeaf;
+                }
+            }
+        }
+    }
 }
 
 [numthreads(8, 8, 8)]
@@ -81,7 +103,8 @@ void CollapseOctree(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    bool belowSurface = DensityTexture[coord + 2] < surfaceLevel;
+    bool belowSurface = DensityTexture[coord] < surfaceLevel;
+        
     for (int z = 0; z <= scale; z += scale / 2)
     {
         for (int y = 0; y <= scale; y += scale / 2)
@@ -91,11 +114,17 @@ void CollapseOctree(uint3 id : SV_DispatchThreadID)
                 uint3 neighbourCoord = coord + uint3(x, y, z);
                 int index = neighbourCoord.x + (neighbourCoord.y + (neighbourCoord.z * size)) * size;
                 if (x < scale && y < scale && z < scale && OctreeLeaves[index].w != scale / 2)
+                {
+                    AddChildLeaves(coord);
                     return;
+                }
 
-                float density = DensityTexture[neighbourCoord + 2];
+                float density = DensityTexture[neighbourCoord];
                 if ((density < surfaceLevel) != belowSurface)
+                {
+                    AddChildLeaves(coord);
                     return;
+                }
             }
         }
     }
@@ -110,41 +139,41 @@ void CollapseOctree(uint3 id : SV_DispatchThreadID)
                     continue;
 
                 uint3 neighbourCoord = coord + uint3(x, y, z);
-                int index = neighbourCoord.x + (neighbourCoord.y + (neighbourCoord.z * size)) * size;
+                int index = neighbourCoord.x + (neighbourCoord.y + neighbourCoord.z * size) * size;
                 OctreeLeaves[index] = 0;
             }
         }
     }
 
-    int octreeIndex = coord.x + (coord.y + (coord.z * size)) * size;
+    int octreeIndex = coord.x + (coord.y + coord.z * size) * size;
     OctreeLeaves[octreeIndex] = float4(coord.xyz, scale);
 }
 
-[numthreads(8,8,8)]
+int numOctreeLeaves;
+
+[numthreads(256,1,1)]
 void CreateVertices (uint3 id : SV_DispatchThreadID)
 {
-    // TEMP
-    /*if (id.x >= size + 1 || id.y >= size + 1 || id.z >= size + 1)
-        return;
-    NoiseBuffer[id.x + id.y * (size + 1) + id.z * (size + 1) * (size + 1)] = DensityTexture[id];*/
-    if (id.x >= size || id.y >= size || id.z >= size)
+    if (id.x >= numOctreeLeaves)
         return;
     
-    float3 coord = id + offset;
+    float4 octreeLeaf = PackedOctreeLeaves[id.x];
     
+    float3 coord = octreeLeaf.xyz + offset;
+        
     float4 cubeCorners[8] =
     {
         // Bottom 4 corners
-        float4(coord,                  DensityTexture[id + 1]),
-        float4(coord + uint3(0, 0, 1), DensityTexture[id + 1 + uint3(0, 0, 1)]),
-        float4(coord + uint3(1, 0, 1), DensityTexture[id + 1 + uint3(1, 0, 1)]),
-        float4(coord + uint3(1, 0, 0), DensityTexture[id + 1 + uint3(1, 0, 0)]),
+        float4(coord,                  DensityTexture[octreeLeaf.xyz]),
+        float4(coord + uint3(0, 0, octreeLeaf.w), DensityTexture[octreeLeaf.xyz + uint3(0, 0, octreeLeaf.w)]),
+        float4(coord + uint3(octreeLeaf.w, 0, octreeLeaf.w), DensityTexture[octreeLeaf.xyz + uint3(octreeLeaf.w, 0, octreeLeaf.w)]),
+        float4(coord + uint3(octreeLeaf.w, 0, 0), DensityTexture[octreeLeaf.xyz + uint3(octreeLeaf.w, 0, 0)]),
         
         // Top 4 corners
-        float4(coord + uint3(0, 1, 0), DensityTexture[id + 1 + uint3(0, 1, 0)]),
-        float4(coord + uint3(0, 1, 1), DensityTexture[id + 1 + uint3(0, 1, 1)]),
-        float4(coord + uint3(1, 1, 1), DensityTexture[id + 1 + uint3(1, 1, 1)]),
-        float4(coord + uint3(1, 1, 0), DensityTexture[id + 1 + uint3(1, 1, 0)]),
+        float4(coord + uint3(0, octreeLeaf.w, 0), DensityTexture[octreeLeaf.xyz + uint3(0, octreeLeaf.w, 0)]),
+        float4(coord + uint3(0, octreeLeaf.w, octreeLeaf.w), DensityTexture[octreeLeaf.xyz + uint3(0, octreeLeaf.w, octreeLeaf.w)]),
+        float4(coord + uint3(octreeLeaf.w, octreeLeaf.w, octreeLeaf.w), DensityTexture[octreeLeaf.xyz + uint3(octreeLeaf.w, octreeLeaf.w, octreeLeaf.w)]),
+        float4(coord + uint3(octreeLeaf.w, octreeLeaf.w, 0), DensityTexture[octreeLeaf.xyz + uint3(octreeLeaf.w, octreeLeaf.w, 0)]),
     };
     
     float3 edgePoints[12];
@@ -178,7 +207,7 @@ void CreateVertices (uint3 id : SV_DispatchThreadID)
         
         Vertices[vertIndex] = vertPos - offset;
         //Normals[vertIndex] = -calculateNormal(vertPos);
-        HashInsert(id.x + id.y * size + id.z * size * size, vertIndex);
+        HashInsert(octreeLeaf.x + (octreeLeaf.y + octreeLeaf.z * size) * size, vertIndex);
     }
 }
 
@@ -229,20 +258,20 @@ void CreateIndices(uint3 id : SV_DispatchThreadID)
     float4 cubeCorners[8] =
     {
         // Bottom 4 corners
-        float4(id.xyz,                  DensityTexture[id + 2]),
-        float4(id.xyz + uint3(0, 0, 1), DensityTexture[id + 2 + uint3(0, 0, 1)]),
-        float4(id.xyz + uint3(1, 0, 1), DensityTexture[id + 2 + uint3(1, 0, 1)]),
-        float4(id.xyz + uint3(1, 0, 0), DensityTexture[id + 2 + uint3(1, 0, 0)]),
+        float4(id.xyz,                  DensityTexture[id + 1]),
+        float4(id.xyz + uint3(0, 0, 1), DensityTexture[id + 1 + uint3(0, 0, 1)]),
+        float4(id.xyz + uint3(1, 0, 1), DensityTexture[id + 1 + uint3(1, 0, 1)]),
+        float4(id.xyz + uint3(1, 0, 0), DensityTexture[id + 1 + uint3(1, 0, 0)]),
         
         // Top 4 corners
-        float4(id.xyz + uint3(0, 1, 0), DensityTexture[id + 2 + uint3(0, 1, 0)]),
-        float4(id.xyz + uint3(0, 1, 1), DensityTexture[id + 2 + uint3(0, 1, 1)]),
-        float4(id.xyz + uint3(1, 1, 1), DensityTexture[id + 2 + uint3(1, 1, 1)]),
-        float4(id.xyz + uint3(1, 1, 0), DensityTexture[id + 2 + uint3(1, 1, 0)]),
+        float4(id.xyz + uint3(0, 1, 0), DensityTexture[id + 1 + uint3(0, 1, 0)]),
+        float4(id.xyz + uint3(0, 1, 1), DensityTexture[id + 1 + uint3(0, 1, 1)]),
+        float4(id.xyz + uint3(1, 1, 1), DensityTexture[id + 1 + uint3(1, 1, 1)]),
+        float4(id.xyz + uint3(1, 1, 0), DensityTexture[id + 1 + uint3(1, 1, 0)]),
     };
     
     float3 voxelBL = id + 1;
-    int curCubeIndex = HashLookup((voxelBL.x) + (voxelBL.y) * (size + 2) + (voxelBL.z) * (size + 2) * (size + 2));
+    int curCubeIndex = HashLookup((voxelBL.x) + ((voxelBL.y) + (voxelBL.z) * (size + 2)) * (size + 2));
     
     for (int i = 0; i < 12; i++)
     {
@@ -258,7 +287,7 @@ void CreateIndices(uint3 id : SV_DispatchThreadID)
             for(int j = 0; j < 3; j++)
             {
                 uint3 v = neighbourVoxels[j] + voxelBL;
-                neighbourIndices[j] = HashLookup(v.x + v.y * (size + 2) + v.z * (size + 2) * (size + 2));
+                neighbourIndices[j] = HashLookup(v.x + (v.y + v.z * (size + 2)) * (size + 2));
             }
             
             int index = Indices.IncrementCounter() * 6;
@@ -347,7 +376,7 @@ void CalculateNormals(uint3 id : SV_DispatchThreadID)
     if(id.x == 0 || id.y == 0 || id.z == 0 ||
       id.x == size - 2 || id.y == size - 2 || id.z == size - 2)
     {
-        normal = calculateNormal(vert);
+        normal = calculateNormal(id);
     }
     else
     {
